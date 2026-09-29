@@ -1,0 +1,488 @@
+//@version=5
+// Hoffmeister ICT Lab — porta das camadas de detecção do lab Python p/ Pine.
+// Camadas ligáveis/desligáveis: Estrutura (swings + BOS/CHoCH), FVG/iFVG, OB/Breaker,
+// Suporte/Resistência (S/R, alternativa mais simples ao OB/Breaker), Sessões
+// (Ásia/NY), Range/Concentração, Trade Zone. Sem MTF, sem sinal de entrada (só
+// visual). Calibrado p/ 15m (swing 5, FVG mín $2).
+indicator("Hoffmeister ICT Lab", overlay = true,
+  max_boxes_count = 500, max_lines_count = 500, max_labels_count = 500)
+
+// ============================ INPUTS ============================
+gS = "① Estrutura (Swings + BOS/CHoCH)"
+inStruct = input.bool(true,  "Ativar estrutura", group = gS)
+swLen    = input.int(5, "Swing lookback (left = right)", minval = 1, group = gS)
+inSwings = input.bool(true, "Marcar swings (▲ ▼)", group = gS)
+colUp    = input.color(color.teal, "Alta", inline = "sc", group = gS)
+colDn    = input.color(color.red,  "Baixa", inline = "sc", group = gS)
+
+gF = "② FVG / iFVG"
+inFVG      = input.bool(true, "Ativar FVG / iFVG", group = gF)
+fvgMin     = input.float(2.0, "Tamanho mínimo ($)", step = 0.1, group = gF)
+fvgKeep    = input.int(40, "Máx FVGs mantidos", minval = 1, maxval = 200, group = gF)
+colFvg     = input.color(color.new(color.gray, 78), "FVG ativo", group = gF)
+
+gO = "③ Order Blocks + Breaker"
+inOB      = input.bool(true, "Ativar OB / Breaker", group = gO)
+obKeep    = input.int(8, "Máx OBs mantidos", minval = 1, maxval = 100, group = gO)
+colOb  = input.color(color.new(color.silver, 82), "OB ativo",     inline = "oc", group = gO)
+colBrk = input.color(color.new(color.gray,   68), "Breaker (BB)", inline = "oc", group = gO)
+
+gSe = "④ Sessões (Ásia / NY)"
+inSess  = input.bool(true, "Ativar sessões", group = gSe)
+sessTz  = input.string("GMT-4", "Fuso das sessões", group = gSe)
+asiaSes = input.session("1800-0000", "Ásia (18:00–00:00)", group = gSe)
+nySes   = input.session("0700-1200", "NY (07:00–12:00)", group = gSe)
+colAsia = input.color(color.new(color.orange, 90), "Ásia", inline = "se", group = gSe)
+colNY   = input.color(color.new(color.blue,   90), "NY", inline = "se", group = gSe)
+
+gR = "⑤ Range / Concentração"
+inRange     = input.bool(true, "Ativar detecção de range", group = gR)
+rangeLen    = input.int(20, "Janela (barras)", minval = 5, group = gR)
+avgLen      = input.int(100, "Janela p/ média histórica (barras)", minval = 20, group = gR)
+squeezeMult = input.float(0.6, "Contração máx (× range médio)", step = 0.05, minval = 0.1, maxval = 1, group = gR)
+minBars     = input.int(6, "Mín. barras contraídas p/ validar", minval = 1, group = gR)
+rangeKeep   = input.int(15, "Máx ranges mantidos", minval = 1, maxval = 100, group = gR)
+colRangeOn  = input.color(color.new(color.purple, 85), "Range ativo",     inline = "rc", group = gR)
+colRangeOff = input.color(color.new(color.purple, 95), "Range encerrado", inline = "rc", group = gR)
+
+gTZ = "⑥ Trade Zone (minha janela de operação)"
+inTZ      = input.bool(true, "Ativar trade zone", group = gTZ)
+tzTz      = input.string("GMT-4", "Fuso da trade zone", group = gTZ)
+nyTZSes   = input.session("0830-1200", "NY (08:30–12:00)", group = gTZ)
+asiaTZSes = input.session("2000-2300", "Ásia (20:00–23:00)", group = gTZ)
+colTz     = input.color(color.new(color.teal, 88), "Trade zone", group = gTZ)
+
+gSR = "⑦ Suporte / Resistência (S/R)"
+inSR     = input.bool(true, "Ativar S/R (alternativa a OB/BB)", group = gSR)
+srLen    = input.int(10, "Swing lookback (S/R)", minval = 1, group = gSR)
+srKeep   = input.int(10, "Máx níveis mantidos", minval = 1, maxval = 50, group = gSR)
+colSR    = input.color(color.new(color.blue, 30),   "Suporte",     inline = "srC", group = gSR)
+colRes   = input.color(color.new(color.orange, 30), "Resistência", inline = "srC", group = gSR)
+
+// ============================ TIPOS / ESTADO ============================
+type Zone
+    box   bx
+    float top
+    float btm
+    int   dir     // 1 = alta, -1 = baixa
+    int   st      // 0 vivo, 1 mitigado, 2 invertido(iFVG/breaker), 3 encerrado
+    label lb      // rótulo dentro da caixa (FVG/iFVG); na p/ OB
+    bool  tested = false  // FVG: preço já ENTROU na zona (aguarda fechar fora=mitiga / através=inverte)
+
+var array<Zone> fvgs = array.new<Zone>()
+var array<Zone> obs  = array.new<Zone>()
+
+type RangeZone
+    box   bx
+    label lb
+    float top
+    float btm
+    int   startBar
+
+var array<RangeZone> ranges = array.new<RangeZone>()
+var box   rBox    = na
+var label rLbl    = na
+var float rHi     = na
+var float rLo     = na
+var int   rStart  = na
+var bool  rActive = false
+var int   rBars   = 0
+
+var box   tzNyBox    = na
+var float tzNyHi     = na
+var float tzNyLo     = na
+var int   tzNyStart  = na
+var label tzNyLbl    = na
+var box   tzAsiaBox   = na
+var float tzAsiaHi    = na
+var float tzAsiaLo    = na
+var int   tzAsiaStart = na
+var label tzAsiaLbl   = na
+
+type SRLevel
+    line  ln
+    label lb
+    float lvl
+    int   role   // 1 = suporte, -1 = resistência (papel ATUAL, já refletindo inversão se houve)
+    int   st     // 0 = ativo no papel original, 1 = ativo no papel invertido (rompeu 1x)
+
+var array<SRLevel> srLevels = array.new<SRLevel>()
+
+// ============================ ESTRUTURA ============================
+ph = ta.pivothigh(swLen, swLen)
+pl = ta.pivotlow(swLen, swLen)
+
+var float upLvl = na       // topo a romper p/ evento de alta
+var float dnLvl = na       // fundo a romper p/ evento de baixa
+var int   upBar = na
+var int   dnBar = na
+var float lastHigh = na    // swing high confirmado mais recente (p/ re-armar o protegido)
+var float lastLow  = na
+var int   lastHighBar = na
+var int   lastLowBar  = na
+var int   bias  = 0
+
+if inStruct and inSwings and not na(ph)
+    label.new(bar_index - swLen, ph, "▼", style = label.style_none, textcolor = colDn, size = size.tiny)
+if inStruct and inSwings and not na(pl)
+    label.new(bar_index - swLen, pl, "▲", style = label.style_none, textcolor = colUp, size = size.tiny)
+
+// SWING PROTEGIDO (igual src/structure.py): o nível A FAVOR do viés trilha o pivô
+// mais recente; o nível PROTEGIDO (gatilho de CHoCH) só é semeado se vazio — pivôs
+// menores NÃO o rebaixam durante a tendência (senão todo pullback vira "CHoCH").
+if not na(ph)
+    lastHigh := ph
+    lastHighBar := bar_index - swLen
+    if bias != -1
+        upLvl := ph
+        upBar := bar_index - swLen
+    else if na(upLvl)
+        upLvl := ph
+        upBar := bar_index - swLen
+if not na(pl)
+    lastLow := pl
+    lastLowBar := bar_index - swLen
+    if bias != 1
+        dnLvl := pl
+        dnBar := bar_index - swLen
+    else if na(dnLvl)
+        dnLvl := pl
+        dnBar := bar_index - swLen
+
+// cria OB do rompimento (candle-origem do impulso na perna swing->quebra)
+makeOB(dir) =>
+    if inOB
+        anchor = dir == 1 ? upBar : dnBar
+        lb = math.min(bar_index - anchor, 100)
+        int k = 0
+        float ext = dir == 1 ? low : high
+        for i = 0 to lb
+            if dir == 1 and low[i] < ext
+                ext := low[i]
+                k := i
+            if dir == -1 and high[i] > ext
+                ext := high[i]
+                k := i
+        float t = high[k]
+        float b = low[k]
+        bx = box.new(bar_index - k, t, bar_index, b, extend = extend.right,
+          border_color = color.new(color.gray, 45), bgcolor = colOb)
+        lbl = label.new(bar_index, (t + b) / 2, "OB", style = label.style_label_right,
+          color = color.new(color.gray, 100), textcolor = color.new(color.white, 0), size = size.small)
+        array.push(obs, Zone.new(bx, t, b, dir, 0, lbl))
+        while array.size(obs) > obKeep
+            Zone gone = array.shift(obs)
+            box.delete(gone.bx)
+            label.delete(gone.lb)
+
+// rompimento de alta
+if (not na(upLvl)) and close > upLvl
+    isCh = bias == -1
+    if inStruct
+        line.new(upBar, upLvl, bar_index, upLvl, color = colUp,
+          style = isCh ? line.style_dashed : line.style_solid, width = 1)
+        label.new(math.round((upBar + bar_index) / 2), upLvl, isCh ? "CHoCH" : "BOS",
+          style = label.style_label_center, color = chart.bg_color, textcolor = colUp, size = size.small)
+    makeOB(1)
+    bias := 1
+    upLvl := na
+    if not na(lastLow)          // re-arma/trilha o fundo protegido (gatilho de CHoCH)
+        dnLvl := lastLow
+        dnBar := lastLowBar
+
+// rompimento de baixa
+if (not na(dnLvl)) and close < dnLvl
+    isCh = bias == 1
+    if inStruct
+        line.new(dnBar, dnLvl, bar_index, dnLvl, color = colDn,
+          style = isCh ? line.style_dashed : line.style_solid, width = 1)
+        label.new(math.round((dnBar + bar_index) / 2), dnLvl, isCh ? "CHoCH" : "BOS",
+          style = label.style_label_center, color = chart.bg_color, textcolor = colDn, size = size.small)
+    makeOB(-1)
+    bias := -1
+    dnLvl := na
+    if not na(lastHigh)         // re-arma/trilha o topo protegido (gatilho de CHoCH)
+        upLvl := lastHigh
+        upBar := lastHighBar
+
+// ============================ FVG / iFVG ============================
+if inFVG
+    // Regra por FECHAMENTO: entrar na zona NÃO resolve; mitiga quando fecha de
+    // volta pra FORA (borda de entrada), inverte quando fecha ATRAVÉS (borda oposta).
+    if array.size(fvgs) > 0
+        for i = array.size(fvgs) - 1 to 0     // de trás pra frente: seguro remover durante o loop
+            Zone z = array.get(fvgs, i)
+            // rótulo colado no canto direito enquanto a zona segue viva
+            if z.st == 0 or z.st == 2
+                label.set_x(z.lb, bar_index)
+            // transições SÓ no fechamento da vela (regra é por close; evita repaint intrabar)
+            if barstate.isconfirmed
+                if z.st == 0
+                    bool entered = z.dir == 1 ? (z.tested or low <= z.top) : (z.tested or high >= z.btm)
+                    bool thru    = z.dir == 1 ? close < z.btm : close > z.top
+                    bool out     = z.dir == 1 ? close > z.top : close < z.btm
+                    if entered and thru
+                        z.st := 2
+                        label.set_text(z.lb, "iFVG")
+                    else if entered and out       // mitigado: some do gráfico em vez de congelar cinza
+                        box.delete(z.bx)
+                        label.delete(z.lb)
+                        array.remove(fvgs, i)
+                    else if (z.dir == 1 ? low <= z.top : high >= z.btm)
+                        z.tested := true
+                else if z.st == 2
+                    if z.dir == 1 and high >= z.btm
+                        box.delete(z.bx)
+                        label.delete(z.lb)
+                        array.remove(fvgs, i)
+                    else if z.dir == -1 and low <= z.top
+                        box.delete(z.bx)
+                        label.delete(z.lb)
+                        array.remove(fvgs, i)
+    // detectar novo FVG (c1 = 2 barras atrás, c2 = 1, c3 = atual)
+    // SÓ no fechamento da c3: o gap só existe quando a 3ª vela fecha (não meia-vela).
+    bullF = high[2] < low[0] and (low[0] - high[2]) >= fvgMin
+    bearF = low[2] > high[0] and (low[2] - high[0]) >= fvgMin
+    if bullF and barstate.isconfirmed
+        float t = low[0]
+        float b = high[2]
+        bx = box.new(bar_index - 1, t, bar_index, b, extend = extend.right,
+          border_color = color.new(color.gray, 55), bgcolor = colFvg)
+        lb = label.new(bar_index, (t + b) / 2, "FVG", style = label.style_label_right,
+          color = color.new(color.gray, 100), textcolor = color.new(color.white, 0), size = size.small)
+        array.push(fvgs, Zone.new(bx, t, b, 1, 0, lb))
+    if bearF and barstate.isconfirmed
+        float t = low[2]
+        float b = high[0]
+        bx = box.new(bar_index - 1, t, bar_index, b, extend = extend.right,
+          border_color = color.new(color.gray, 55), bgcolor = colFvg)
+        lb = label.new(bar_index, (t + b) / 2, "FVG", style = label.style_label_right,
+          color = color.new(color.gray, 100), textcolor = color.new(color.white, 0), size = size.small)
+        array.push(fvgs, Zone.new(bx, t, b, -1, 0, lb))
+    while array.size(fvgs) > fvgKeep
+        Zone gone = array.shift(fvgs)
+        box.delete(gone.bx)
+        label.delete(gone.lb)
+
+// ============================ OB / BREAKER ============================
+// Regra por FECHAMENTO (evita repaint intrabar):
+// OB vivo: pavio tocou e fechou fora (do lado de origem) = OB se mantém.
+//          corpo atravessou (fechou do outro lado) = vira BB.
+// BB formado: preço precisa TOCAR a zona de novo antes de contar qualquer
+// fechamento. Depois de tocar, corpo fechou fora (pra cima OU pra baixo) = mitiga
+// (apaga). Corpo fechou dentro = mantém o BB, aguardando a próxima vela.
+if inOB and array.size(obs) > 0
+    for i = array.size(obs) - 1 to 0     // de trás pra frente: seguro remover durante o loop
+        Zone o = array.get(obs, i)
+        // rótulo colado no canto direito enquanto a zona segue viva
+        if o.st == 0 or o.st == 2
+            label.set_x(o.lb, bar_index)
+        if barstate.isconfirmed
+            if o.st == 0
+                if o.dir == 1 and math.min(close, open) < o.btm
+                    o.st := 2
+                    box.set_bgcolor(o.bx, colBrk)
+                    label.set_text(o.lb, "BB")
+                else if o.dir == -1 and math.max(close, open) > o.top
+                    o.st := 2
+                    box.set_bgcolor(o.bx, colBrk)
+                    label.set_text(o.lb, "BB")
+            else if o.st == 2   // breaker: mitiga só depois de tocar de novo e fechar fora (qualquer lado)
+                bool touchNow  = low <= o.top and high >= o.btm
+                bool entered   = o.tested or touchNow
+                bool bodyOutUp = math.min(close, open) > o.top
+                bool bodyOutDn = math.max(close, open) < o.btm
+                if entered and (bodyOutUp or bodyOutDn)
+                    box.delete(o.bx)
+                    label.delete(o.lb)
+                    array.remove(obs, i)
+                else if touchNow
+                    o.tested := true
+
+// ============================ SUPORTE / RESISTÊNCIA (S/R) ============================
+// Alternativa mais simples ao OB/Breaker: swing high/low viram linha horizontal
+// (S/R) estendendo p/ direita. 1º rompimento (close através) INVERTE o papel —
+// suporte rompido vira resistência e vice-versa, igual à lógica do breaker (BB).
+// 2º rompimento (falha também no papel invertido) DELETA de vez — sem congelar
+// cinza, sem toco de linha sobrando pelo histórico.
+if inSR
+    phSR = ta.pivothigh(srLen, srLen)
+    plSR = ta.pivotlow(srLen, srLen)
+
+    if array.size(srLevels) > 0
+        for i = array.size(srLevels) - 1 to 0     // de trás pra frente: seguro remover durante o loop
+            SRLevel z = array.get(srLevels, i)
+            if z.st == 0
+                label.set_x(z.lb, bar_index)
+                if z.role == 1 and close < z.lvl
+                    z.role := -1
+                    z.st := 1
+                    line.set_color(z.ln, colRes)
+                    label.set_text(z.lb, "R")
+                else if z.role == -1 and close > z.lvl
+                    z.role := 1
+                    z.st := 1
+                    line.set_color(z.ln, colSR)
+                    label.set_text(z.lb, "S")
+            else if z.st == 1
+                invalidated = (z.role == 1 and close < z.lvl) or (z.role == -1 and close > z.lvl)
+                if invalidated
+                    line.delete(z.ln)
+                    label.delete(z.lb)
+                    array.remove(srLevels, i)
+                else
+                    label.set_x(z.lb, bar_index)
+
+    if not na(phSR)
+        ln = line.new(bar_index - srLen, phSR, bar_index, phSR, extend = extend.right, color = colRes, width = 1)
+        lb = label.new(bar_index, phSR, "R", style = label.style_label_left,
+          color = color.new(color.gray, 100), textcolor = colRes, size = size.small)
+        array.push(srLevels, SRLevel.new(ln, lb, phSR, -1, 0))
+    if not na(plSR)
+        ln = line.new(bar_index - srLen, plSR, bar_index, plSR, extend = extend.right, color = colSR, width = 1)
+        lb = label.new(bar_index, plSR, "S", style = label.style_label_left,
+          color = color.new(color.gray, 100), textcolor = colSR, size = size.small)
+        array.push(srLevels, SRLevel.new(ln, lb, plSR, 1, 0))
+    while array.size(srLevels) > srKeep
+        SRLevel gone = array.shift(srLevels)
+        line.delete(gone.ln)
+        label.delete(gone.lb)
+
+// ============================ SESSÕES (Ásia / NY) ============================
+// Caixa por dia com o range (high/low) da sessão; borda dashed, cor por sessão.
+// Só renderiza até H1 (intraday) — em H4/Diário sessão não faz sentido.
+var box   aBox = na
+var float aHi  = na
+var float aLo  = na
+var int   aStart = na
+var label aLbl = na
+var box   nBox = na
+var float nHi  = na
+var float nLo  = na
+var int   nStart = na
+var label nLbl = na
+if inSess and timeframe.in_seconds() <= 3600
+    aNow = not na(time(timeframe.period, asiaSes, sessTz))
+    if aNow and not aNow[1]
+        aHi := high
+        aLo := low
+        aStart := bar_index
+        aBox := box.new(bar_index, high, bar_index, low, bgcolor = colAsia,
+          border_color = color.new(color.orange, 40), border_style = line.style_dashed)
+        aLbl := label.new(bar_index, high, "Ásia", style = label.style_label_down,
+          color = color.new(color.orange, 100), textcolor = color.new(color.orange, 20), size = size.tiny)
+    else if aNow and not na(aBox)
+        aHi := math.max(aHi, high)
+        aLo := math.min(aLo, low)
+        box.set_top(aBox, aHi)
+        box.set_bottom(aBox, aLo)
+        box.set_right(aBox, bar_index)
+        label.set_xy(aLbl, math.round((aStart + bar_index) / 2), aHi)
+    nNow = not na(time(timeframe.period, nySes, sessTz))
+    if nNow and not nNow[1]
+        nHi := high
+        nLo := low
+        nStart := bar_index
+        nBox := box.new(bar_index, high, bar_index, low, bgcolor = colNY,
+          border_color = color.new(color.blue, 40), border_style = line.style_dashed)
+        nLbl := label.new(bar_index, high, "NY", style = label.style_label_down,
+          color = color.new(color.blue, 100), textcolor = color.new(color.blue, 20), size = size.tiny)
+    else if nNow and not na(nBox)
+        nHi := math.max(nHi, high)
+        nLo := math.min(nLo, low)
+        box.set_top(nBox, nHi)
+        box.set_bottom(nBox, nLo)
+        box.set_right(nBox, bar_index)
+        label.set_xy(nLbl, math.round((nStart + bar_index) / 2), nHi)
+
+// ============================ RANGE / CONCENTRAÇÃO ============================
+// Contração: range das últimas rangeLen barras (highest-lowest) comparado à
+// MÉDIA HISTÓRICA do próprio range (não ao ATR de 1 barra — um range de N
+// barras cresce ~sqrt(N) só por acúmulo estatístico, então comparar contra
+// ATR(1) exige silêncio anormal e nunca pega chop normal). squeezeMult é uma
+// razão sem unidade: 0.6 = range atual ≤ 60% do range médio recente.
+// Sustentado por minBars barras seguidas; ativa a caixa só na confirmação
+// (evita repaint); enquanto ativa, segue o topo/fundo real da janela (igual
+// às sessões). Encerra assim que a contração se rompe — esse é o limite onde
+// a manipulação (sweep + rejeição) será checada numa camada futura.
+if inRange
+    hh = ta.highest(high, rangeLen)
+    ll = ta.lowest(low, rangeLen)
+    rangeNow = hh - ll
+    rangeAvg = ta.sma(rangeNow, avgLen)
+    tight = rangeNow <= squeezeMult * rangeAvg
+    rBars := tight ? rBars + 1 : 0
+
+    if not rActive
+        if tight and rBars >= minBars and barstate.isconfirmed
+            rActive := true
+            rStart  := bar_index - rangeLen + 1
+            rHi     := hh
+            rLo     := ll
+            rBox := box.new(rStart, rHi, bar_index, rLo,
+              border_color = color.new(color.purple, 40), border_style = line.style_dashed, bgcolor = colRangeOn)
+            rLbl := label.new(rStart, rHi, "Range", style = label.style_label_down,
+              color = color.new(color.purple, 100), textcolor = color.new(color.purple, 15), size = size.tiny)
+    else
+        if tight
+            rHi := math.max(rHi, high)
+            rLo := math.min(rLo, low)
+            box.set_top(rBox, rHi)
+            box.set_bottom(rBox, rLo)
+            box.set_right(rBox, bar_index)
+            label.set_xy(rLbl, math.round((rStart + bar_index) / 2), rHi)
+        else
+            rActive := false
+            box.set_extend(rBox, extend.none)
+            box.set_right(rBox, bar_index)
+            box.set_bgcolor(rBox, colRangeOff)
+            label.set_x(rLbl, math.round((rStart + bar_index) / 2))
+            array.push(ranges, RangeZone.new(rBox, rLbl, rHi, rLo, rStart))
+            while array.size(ranges) > rangeKeep
+                RangeZone gone = array.shift(ranges)
+                box.delete(gone.bx)
+                label.delete(gone.lb)
+
+// ============================ TRADE ZONE (janela pessoal de operação) ============================
+// Caixa presa ao range de preço da janela (igual às sessões/range) — sem extend,
+// sem sombrear a vertical inteira. Só intraday (mesmo critério das sessões).
+if inTZ and timeframe.in_seconds() <= 3600
+    nyNow = not na(time(timeframe.period, nyTZSes, tzTz))
+    if nyNow and not nyNow[1]
+        if not na(tzNyBox)          // mantém só a última janela — some a anterior ao abrir a nova
+            box.delete(tzNyBox)
+            label.delete(tzNyLbl)
+        tzNyHi := high
+        tzNyLo := low
+        tzNyStart := bar_index
+        tzNyBox := box.new(bar_index, high, bar_index, low, bgcolor = colTz,
+          border_color = color.new(colTz, 40), border_style = line.style_dashed)
+        tzNyLbl := label.new(bar_index, high, "NY TZ", style = label.style_label_down,
+          color = color.new(colTz, 100), textcolor = color.new(colTz, 10), size = size.tiny)
+    else if nyNow and not na(tzNyBox)
+        tzNyHi := math.max(tzNyHi, high)
+        tzNyLo := math.min(tzNyLo, low)
+        box.set_top(tzNyBox, tzNyHi)
+        box.set_bottom(tzNyBox, tzNyLo)
+        box.set_right(tzNyBox, bar_index)
+        label.set_xy(tzNyLbl, math.round((tzNyStart + bar_index) / 2), tzNyHi)
+
+    asiaNow = not na(time(timeframe.period, asiaTZSes, tzTz))
+    if asiaNow and not asiaNow[1]
+        if not na(tzAsiaBox)        // mantém só a última janela — some a anterior ao abrir a nova
+            box.delete(tzAsiaBox)
+            label.delete(tzAsiaLbl)
+        tzAsiaHi := high
+        tzAsiaLo := low
+        tzAsiaStart := bar_index
+        tzAsiaBox := box.new(bar_index, high, bar_index, low, bgcolor = colTz,
+          border_color = color.new(colTz, 40), border_style = line.style_dashed)
+        tzAsiaLbl := label.new(bar_index, high, "Ásia TZ", style = label.style_label_down,
+          color = color.new(colTz, 100), textcolor = color.new(colTz, 10), size = size.tiny)
+    else if asiaNow and not na(tzAsiaBox)
+        tzAsiaHi := math.max(tzAsiaHi, high)
+        tzAsiaLo := math.min(tzAsiaLo, low)
+        box.set_top(tzAsiaBox, tzAsiaHi)
+        box.set_bottom(tzAsiaBox, tzAsiaLo)
+        box.set_right(tzAsiaBox, bar_index)
+        label.set_xy(tzAsiaLbl, math.round((tzAsiaStart + bar_index) / 2), tzAsiaHi)
