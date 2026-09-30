@@ -3,7 +3,8 @@
 // Camadas ligáveis/desligáveis: Estrutura (swings + BOS/CHoCH), FVG/iFVG, OB/Breaker,
 // Suporte/Resistência (S/R, alternativa mais simples ao OB/Breaker), Sessões
 // (Ásia/NY), Range/Concentração, Trade Zone. Sem sinal de entrada (só visual).
-// Calibrado p/ 15m (swing 5, FVG mín $2). FVG/iFVG opcionalmente MTF: além da
+// Calibrado p/ 15m (swing 5, FVG mín 0,05% do preço — % em vez de $ fixo pra não
+// quebrar em ativos de preço baixo, tipo forex). FVG/iFVG opcionalmente MTF: além da
 // detecção no TF do gráfico, também detecta no timeframe de origem configurado,
 // dentro de uma faixa de TF do gráfico em que a camada MTF fica ativa.
 indicator("Hoffmeister ICT Lab", overlay = true,
@@ -19,7 +20,7 @@ colDn    = input.color(color.red,  "Baixa", inline = "sc", group = gS)
 
 gF = "② FVG / iFVG"
 inFVG      = input.bool(true, "Ativar FVG / iFVG", group = gF)
-fvgMin     = input.float(2.0, "Tamanho mínimo ($)", step = 0.1, group = gF)
+fvgMinPct  = input.float(0.05, "Tamanho mínimo (% do preço)", step = 0.01, minval = 0.0, group = gF)
 fvgKeep    = input.int(40, "Máx FVGs mantidos", minval = 1, maxval = 200, group = gF)
 colFvg     = input.color(color.new(color.gray, 78), "FVG ativo", group = gF)
 inFvgMtf   = input.bool(false, "MTF: detectar FVG num timeframe maior", group = gF)
@@ -315,8 +316,8 @@ if inFVG
     // Desligado quando o MTF está marcado — nesse modo só o FVG do timeframe
     // selecionado (ex.: H4) aparece, pra não sobrepor com o do TF do gráfico.
     if not inFvgMtf
-        bullF = high[2] < low[0] and (low[0] - high[2]) >= fvgMin
-        bearF = low[2] > high[0] and (low[2] - high[0]) >= fvgMin
+        bullF = high[2] < low[0] and (low[0] - high[2]) >= close * fvgMinPct / 100
+        bearF = low[2] > high[0] and (low[2] - high[0]) >= close * fvgMinPct / 100
         if bullF and barstate.isconfirmed
             float t = low[0]
             float b = high[2]
@@ -343,8 +344,8 @@ if inFVG
     // C2, usado como âncora esquerda da caixa (em xloc.bar_time, já que "1 barra
     // atrás" do TF maior não bate com bar_index do gráfico).
     if fvgMtfActive and newMtfBar
-        bool bullM = mtfH3 < mtfL1 and (mtfL1 - mtfH3) >= fvgMin
-        bool bearM = mtfL3 > mtfH1 and (mtfL3 - mtfH1) >= fvgMin
+        bool bullM = mtfH3 < mtfL1 and (mtfL1 - mtfH3) >= mtfC1 * fvgMinPct / 100
+        bool bearM = mtfL3 > mtfH1 and (mtfL3 - mtfH1) >= mtfC1 * fvgMinPct / 100
         if bullM
             float t = mtfL1
             float b = mtfH3
