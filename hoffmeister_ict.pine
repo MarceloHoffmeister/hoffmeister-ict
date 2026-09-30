@@ -2,8 +2,10 @@
 // Hoffmeister ICT Lab — porta das camadas de detecção do lab Python p/ Pine.
 // Camadas ligáveis/desligáveis: Estrutura (swings + BOS/CHoCH), FVG/iFVG, OB/Breaker,
 // Suporte/Resistência (S/R, alternativa mais simples ao OB/Breaker), Sessões
-// (Ásia/NY), Range/Concentração, Trade Zone. Sem MTF, sem sinal de entrada (só
-// visual). Calibrado p/ 15m (swing 5, FVG mín $2).
+// (Ásia/NY), Range/Concentração, Trade Zone. Sem sinal de entrada (só visual).
+// Calibrado p/ 15m (swing 5, FVG mín $2). FVG/iFVG opcionalmente MTF: além da
+// detecção no TF do gráfico, também detecta no timeframe de origem configurado,
+// dentro de uma faixa de TF do gráfico em que a camada MTF fica ativa.
 indicator("Hoffmeister ICT Lab", overlay = true,
   max_boxes_count = 500, max_lines_count = 500, max_labels_count = 500)
 
@@ -20,6 +22,10 @@ inFVG      = input.bool(true, "Ativar FVG / iFVG", group = gF)
 fvgMin     = input.float(2.0, "Tamanho mínimo ($)", step = 0.1, group = gF)
 fvgKeep    = input.int(40, "Máx FVGs mantidos", minval = 1, maxval = 200, group = gF)
 colFvg     = input.color(color.new(color.gray, 78), "FVG ativo", group = gF)
+inFvgMtf   = input.bool(false, "MTF: detectar FVG num timeframe maior", group = gF)
+fvgMtfTF   = input.timeframe("240", "MTF: timeframe de origem", group = gF)
+fvgMtfMin  = input.timeframe("15",  "MTF: TF mínimo do gráfico p/ exibir", group = gF)
+fvgMtfMax  = input.timeframe("240", "MTF: TF máximo do gráfico p/ exibir", group = gF)
 
 gO = "③ Order Blocks + Breaker"
 inOB      = input.bool(true, "Ativar OB / Breaker", group = gO)
@@ -68,9 +74,38 @@ type Zone
     int   st      // 0 vivo, 1 mitigado, 2 invertido(iFVG/breaker), 3 encerrado
     label lb      // rótulo dentro da caixa (FVG/iFVG); na p/ OB
     bool  tested = false  // FVG: preço já ENTROU na zona (aguarda fechar fora=mitiga / através=inverte)
+    bool  mtf    = false  // FVG: veio da detecção MTF (timeframe maior) em vez do TF do gráfico
 
 var array<Zone> fvgs = array.new<Zone>()
 var array<Zone> obs  = array.new<Zone>()
+
+// nome curto de um timeframe p/ rotular a origem de cada FVG (ex.: "H4", "M15", "D")
+f_tfLabel(tf) =>
+    sec = timeframe.in_seconds(tf)
+    string lbl = na
+    if sec < 60
+        lbl := "S" + str.tostring(sec)
+    else if sec < 3600
+        lbl := "M" + str.tostring(sec / 60)
+    else if sec < 86400
+        lbl := "H" + str.tostring(sec / 3600)
+    else if sec < 604800
+        n = sec / 86400
+        lbl := n == 1 ? "D" : "D" + str.tostring(n)
+    else
+        n = sec / 604800
+        lbl := n == 1 ? "W" : "W" + str.tostring(n)
+    lbl
+
+fvgMtfLabel  = f_tfLabel(fvgMtfTF)
+tfNowSec     = timeframe.in_seconds()
+fvgMtfActive = inFvgMtf and tfNowSec >= timeframe.in_seconds(fvgMtfMin) and tfNowSec <= timeframe.in_seconds(fvgMtfMax)
+
+// request.security() não pode ficar dentro de `if`/loop sem dynamic_requests=true,
+// então roda incondicional aqui em cima; o uso do resultado é que fica condicional
+// (guardado por fvgMtfActive lá embaixo, na seção de FVG).
+[mtfH1, mtfL1, mtfH3, mtfL3, mtfT2, mtfT1] = request.security(syminfo.tickerid, fvgMtfTF,
+  [high[1], low[1], high[3], low[3], time[2], time[1]], lookahead = barmerge.lookahead_off)
 
 type RangeZone
     box   bx
@@ -213,8 +248,9 @@ if inFVG
         for i = array.size(fvgs) - 1 to 0     // de trás pra frente: seguro remover durante o loop
             Zone z = array.get(fvgs, i)
             // rótulo colado no canto direito enquanto a zona segue viva
+            // (zonas MTF usam xloc.bar_time — o "x" tem que ser um timestamp, não bar_index)
             if z.st == 0 or z.st == 2
-                label.set_x(z.lb, bar_index)
+                label.set_x(z.lb, z.mtf ? time : bar_index)
             // transições SÓ no fechamento da vela (regra é por close; evita repaint intrabar)
             if barstate.isconfirmed
                 if z.st == 0
@@ -223,7 +259,7 @@ if inFVG
                     bool out     = z.dir == 1 ? close > z.top : close < z.btm
                     if entered and thru
                         z.st := 2
-                        label.set_text(z.lb, "iFVG")
+                        label.set_text(z.lb, z.mtf ? "iFVG " + fvgMtfLabel : "iFVG")
                     else if entered and out       // mitigado: some do gráfico em vez de congelar cinza
                         box.delete(z.bx)
                         label.delete(z.lb)
@@ -241,24 +277,58 @@ if inFVG
                         array.remove(fvgs, i)
     // detectar novo FVG (c1 = 2 barras atrás, c2 = 1, c3 = atual)
     // SÓ no fechamento da c3: o gap só existe quando a 3ª vela fecha (não meia-vela).
-    bullF = high[2] < low[0] and (low[0] - high[2]) >= fvgMin
-    bearF = low[2] > high[0] and (low[2] - high[0]) >= fvgMin
-    if bullF and barstate.isconfirmed
-        float t = low[0]
-        float b = high[2]
-        bx = box.new(bar_index - 1, t, bar_index, b, extend = extend.right,
-          border_color = color.new(color.gray, 55), bgcolor = colFvg)
-        lb = label.new(bar_index, (t + b) / 2, "FVG", style = label.style_label_right,
-          color = color.new(color.gray, 100), textcolor = color.new(color.white, 0), size = size.small)
-        array.push(fvgs, Zone.new(bx, t, b, 1, 0, lb))
-    if bearF and barstate.isconfirmed
-        float t = low[2]
-        float b = high[0]
-        bx = box.new(bar_index - 1, t, bar_index, b, extend = extend.right,
-          border_color = color.new(color.gray, 55), bgcolor = colFvg)
-        lb = label.new(bar_index, (t + b) / 2, "FVG", style = label.style_label_right,
-          color = color.new(color.gray, 100), textcolor = color.new(color.white, 0), size = size.small)
-        array.push(fvgs, Zone.new(bx, t, b, -1, 0, lb))
+    // Desligado quando o MTF está marcado — nesse modo só o FVG do timeframe
+    // selecionado (ex.: H4) aparece, pra não sobrepor com o do TF do gráfico.
+    if not inFvgMtf
+        bullF = high[2] < low[0] and (low[0] - high[2]) >= fvgMin
+        bearF = low[2] > high[0] and (low[2] - high[0]) >= fvgMin
+        if bullF and barstate.isconfirmed
+            float t = low[0]
+            float b = high[2]
+            bx = box.new(bar_index - 1, t, bar_index, b, extend = extend.right,
+              border_color = color.new(color.gray, 55), bgcolor = colFvg)
+            lb = label.new(bar_index, (t + b) / 2, "FVG", style = label.style_label_right,
+              color = color.new(color.gray, 100), textcolor = color.new(color.white, 0), size = size.small)
+            array.push(fvgs, Zone.new(bx, t, b, 1, 0, lb))
+        if bearF and barstate.isconfirmed
+            float t = low[2]
+            float b = high[0]
+            bx = box.new(bar_index - 1, t, bar_index, b, extend = extend.right,
+              border_color = color.new(color.gray, 55), bgcolor = colFvg)
+            lb = label.new(bar_index, (t + b) / 2, "FVG", style = label.style_label_right,
+              color = color.new(color.gray, 100), textcolor = color.new(color.white, 0), size = size.small)
+            array.push(fvgs, Zone.new(bx, t, b, -1, 0, lb))
+
+    // ---- FVG MTF: mesmo padrão de 3 velas, mas lido de um timeframe maior ----
+    // mtfH1/mtfL1/mtfH3/mtfL3/mtfT2/mtfT1 vêm do request.security() no topo do
+    // script (não pode ficar dentro de `if`). Usa offsets [1]/[2]/[3] (em vez de
+    // [0]/[1]/[2]) p/ só enxergar velas já fechadas do TF maior — sem repaint.
+    // mtfT1 = open time da vela fechada mais recente (C3): muda 1x por vela do
+    // TF maior, então dispara a criação só uma vez por FVG. mtfT2 = open time de
+    // C2, usado como âncora esquerda da caixa (em xloc.bar_time, já que "1 barra
+    // atrás" do TF maior não bate com bar_index do gráfico).
+    if fvgMtfActive and ta.change(mtfT1) != 0
+        bool bullM = mtfH3 < mtfL1 and (mtfL1 - mtfH3) >= fvgMin
+        bool bearM = mtfL3 > mtfH1 and (mtfL3 - mtfH1) >= fvgMin
+        if bullM
+            float t = mtfL1
+            float b = mtfH3
+            bx = box.new(mtfT2, t, time, b, xloc = xloc.bar_time, extend = extend.right,
+              border_color = color.new(color.gray, 55), bgcolor = colFvg)
+            lb = label.new(time, (t + b) / 2, "FVG " + fvgMtfLabel, xloc = xloc.bar_time,
+              style = label.style_label_right, color = color.new(color.gray, 100),
+              textcolor = color.new(color.white, 0), size = size.small)
+            array.push(fvgs, Zone.new(bx = bx, top = t, btm = b, dir = 1, st = 0, lb = lb, mtf = true))
+        if bearM
+            float t = mtfL3
+            float b = mtfH1
+            bx = box.new(mtfT2, t, time, b, xloc = xloc.bar_time, extend = extend.right,
+              border_color = color.new(color.gray, 55), bgcolor = colFvg)
+            lb = label.new(time, (t + b) / 2, "FVG " + fvgMtfLabel, xloc = xloc.bar_time,
+              style = label.style_label_right, color = color.new(color.gray, 100),
+              textcolor = color.new(color.white, 0), size = size.small)
+            array.push(fvgs, Zone.new(bx = bx, top = t, btm = b, dir = -1, st = 0, lb = lb, mtf = true))
+
     while array.size(fvgs) > fvgKeep
         Zone gone = array.shift(fvgs)
         box.delete(gone.bx)
