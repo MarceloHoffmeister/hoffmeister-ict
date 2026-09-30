@@ -23,10 +23,18 @@ inFVG      = input.bool(true, "Ativar FVG / iFVG", group = gF)
 fvgMinPct  = input.float(0.05, "Tamanho mínimo (% do preço)", step = 0.01, minval = 0.0, group = gF)
 fvgKeep    = input.int(40, "Máx FVGs mantidos", minval = 1, maxval = 200, group = gF)
 colFvg     = input.color(color.new(color.gray, 78), "FVG ativo", group = gF)
-inFvgMtf   = input.bool(false, "MTF: detectar FVG num timeframe maior", group = gF)
-fvgMtfTF   = input.timeframe("240", "MTF: timeframe de origem", group = gF)
-fvgMtfMin  = input.timeframe("15",  "MTF: TF mínimo do gráfico p/ exibir", group = gF)
-fvgMtfMax  = input.timeframe("240", "MTF: TF máximo do gráfico p/ exibir", group = gF)
+inFvgMtf1  = input.bool(false, "MTF 1: detectar FVG num timeframe maior", group = gF)
+fvgMtfTF1  = input.timeframe("60",  "MTF 1: timeframe de origem", group = gF)
+fvgMtfMin1 = input.timeframe("1",   "MTF 1: TF mínimo do gráfico p/ exibir", group = gF)
+fvgMtfMax1 = input.timeframe("60",  "MTF 1: TF máximo do gráfico p/ exibir", group = gF)
+inFvgMtf2  = input.bool(false, "MTF 2: detectar FVG num timeframe maior", group = gF)
+fvgMtfTF2  = input.timeframe("240", "MTF 2: timeframe de origem", group = gF)
+fvgMtfMin2 = input.timeframe("15",  "MTF 2: TF mínimo do gráfico p/ exibir", group = gF)
+fvgMtfMax2 = input.timeframe("240", "MTF 2: TF máximo do gráfico p/ exibir", group = gF)
+inFvgMtf3  = input.bool(false, "MTF 3: detectar FVG num timeframe maior", group = gF)
+fvgMtfTF3  = input.timeframe("D",   "MTF 3: timeframe de origem", group = gF)
+fvgMtfMin3 = input.timeframe("60",  "MTF 3: TF mínimo do gráfico p/ exibir", group = gF)
+fvgMtfMax3 = input.timeframe("D",   "MTF 3: TF máximo do gráfico p/ exibir", group = gF)
 
 gO = "③ Order Blocks + Breaker"
 inOB      = input.bool(true, "Ativar OB / Breaker", group = gO)
@@ -75,7 +83,7 @@ type Zone
     int   st      // 0 vivo, 1 mitigado, 2 invertido(iFVG/breaker), 3 encerrado
     label lb      // rótulo dentro da caixa (FVG/iFVG); na p/ OB
     bool  tested = false  // FVG: preço já ENTROU na zona (aguarda fechar fora=mitiga / através=inverte)
-    bool  mtf    = false  // FVG: veio da detecção MTF (timeframe maior) em vez do TF do gráfico
+    int   mtfSlot = 0     // FVG: 0 = TF do gráfico; 1/2/3 = veio do slot MTF correspondente
 
 var array<Zone> fvgs = array.new<Zone>()
 var array<Zone> obs  = array.new<Zone>()
@@ -98,22 +106,91 @@ f_tfLabel(tf) =>
         lbl := n == 1 ? "W" : "W" + str.tostring(n)
     lbl
 
-fvgMtfLabel  = f_tfLabel(fvgMtfTF)
-tfNowSec     = timeframe.in_seconds()
-fvgMtfActive = inFvgMtf and tfNowSec >= timeframe.in_seconds(fvgMtfMin) and tfNowSec <= timeframe.in_seconds(fvgMtfMax)
+// testa mitigação/inversão de UMA zona (índice i do array) contra um candle já
+// fechado (h1/l1/c1) — do próprio gráfico (tfLabel = "") ou de um slot MTF. Reusa
+// a mesma regra nos dois casos: entrar na zona não resolve; mitiga fechando de
+// volta pra fora, inverte (iFVG) fechando através.
+f_fvgTransition(array<Zone> arr, int i, float h1, float l1, float c1, string tfLabel) =>
+    Zone z = array.get(arr, i)
+    string ifvgTxt = tfLabel == "" ? "iFVG" : "iFVG " + tfLabel
+    if z.st == 0
+        bool entered = z.dir == 1 ? (z.tested or l1 <= z.top) : (z.tested or h1 >= z.btm)
+        bool thru    = z.dir == 1 ? c1 < z.btm : c1 > z.top
+        bool out     = z.dir == 1 ? c1 > z.top : c1 < z.btm
+        if entered and thru
+            z.st := 2
+            label.set_text(z.lb, ifvgTxt)
+        else if entered and out   // mitigado: some do gráfico em vez de congelar cinza
+            box.delete(z.bx)
+            label.delete(z.lb)
+            array.remove(arr, i)
+        else if (z.dir == 1 ? l1 <= z.top : h1 >= z.btm)
+            z.tested := true
+    else if z.st == 2
+        if z.dir == 1 and h1 >= z.btm
+            box.delete(z.bx)
+            label.delete(z.lb)
+            array.remove(arr, i)
+        else if z.dir == -1 and l1 <= z.top
+            box.delete(z.bx)
+            label.delete(z.lb)
+            array.remove(arr, i)
+    // array.remove() devolve o elemento removido (tipo Zone), diferente dos outros
+    // comandos acima (void/bool) — sem essa linha, o Pine tenta unificar os tipos
+    // de retorno dos `if`/`else if` acima e quebra. Essa linha solta no final vira
+    // o último statement da função, então o que tem acima passa a ser só efeito
+    // colateral (não precisa mais bater tipo entre os ramos).
+    true
+
+// cria uma zona MTF a partir do padrão de 3 velas JÁ FECHADAS de um slot (h1/l1 =
+// C3, h3/l3 = C1) — ancorada por timestamp (xloc.bar_time, já que "1 barra atrás"
+// do TF maior não bate com bar_index do gráfico). leftT = open time de C2.
+f_fvgMtfCreate(array<Zone> arr, int slot, float h1, float l1, float h3, float l3, float c1, int leftT, string tfLabel) =>
+    float minSize = c1 * fvgMinPct / 100
+    bool bullM = h3 < l1 and (l1 - h3) >= minSize
+    bool bearM = l3 > h1 and (l3 - h1) >= minSize
+    if bullM
+        bx = box.new(leftT, l1, time, h3, xloc = xloc.bar_time, extend = extend.right,
+          border_color = color.new(color.gray, 55), bgcolor = colFvg)
+        lb = label.new(time, (l1 + h3) / 2, "FVG " + tfLabel, xloc = xloc.bar_time,
+          style = label.style_label_right, color = color.new(color.gray, 100),
+          textcolor = color.new(color.white, 0), size = size.small)
+        array.push(arr, Zone.new(bx = bx, top = l1, btm = h3, dir = 1, st = 0, lb = lb, mtfSlot = slot))
+    if bearM
+        bx = box.new(leftT, l3, time, h1, xloc = xloc.bar_time, extend = extend.right,
+          border_color = color.new(color.gray, 55), bgcolor = colFvg)
+        lb = label.new(time, (l3 + h1) / 2, "FVG " + tfLabel, xloc = xloc.bar_time,
+          style = label.style_label_right, color = color.new(color.gray, 100),
+          textcolor = color.new(color.white, 0), size = size.small)
+        array.push(arr, Zone.new(bx = bx, top = l3, btm = h1, dir = -1, st = 0, lb = lb, mtfSlot = slot))
+
+fvgMtfLabel1  = f_tfLabel(fvgMtfTF1)
+fvgMtfLabel2  = f_tfLabel(fvgMtfTF2)
+fvgMtfLabel3  = f_tfLabel(fvgMtfTF3)
+tfNowSec      = timeframe.in_seconds()
+fvgMtfActive1 = inFvgMtf1 and tfNowSec >= timeframe.in_seconds(fvgMtfMin1) and tfNowSec <= timeframe.in_seconds(fvgMtfMax1)
+fvgMtfActive2 = inFvgMtf2 and tfNowSec >= timeframe.in_seconds(fvgMtfMin2) and tfNowSec <= timeframe.in_seconds(fvgMtfMax2)
+fvgMtfActive3 = inFvgMtf3 and tfNowSec >= timeframe.in_seconds(fvgMtfMin3) and tfNowSec <= timeframe.in_seconds(fvgMtfMax3)
+anyFvgMtfOn   = inFvgMtf1 or inFvgMtf2 or inFvgMtf3
 
 // request.security() não pode ficar dentro de `if`/loop sem dynamic_requests=true,
-// então roda incondicional aqui em cima; o uso do resultado é que fica condicional
-// (guardado por fvgMtfActive lá embaixo, na seção de FVG). mtfH1/mtfL1/mtfC1 (a
-// vela fechada mais recente do TF maior) também alimentam a mitigação/inversão
-// das zonas MTF — testadas contra o candle do TF maior, não do gráfico, pra dar
-// o mesmo resultado (FVG ou iFVG) não importa em qual TF você está olhando.
-[mtfH1, mtfL1, mtfH3, mtfL3, mtfT2, mtfT1, mtfC1] = request.security(syminfo.tickerid, fvgMtfTF,
+// então cada slot roda incondicional aqui em cima; o uso do resultado é que fica
+// condicional (guardado por fvgMtfActiveN lá embaixo, na seção de FVG). hN/lN/cN
+// são o candle FECHADO mais recente do TF do slot — usado tanto pra criar a zona
+// quanto pra testar mitigação/inversão dela, sempre contra o candle de origem (não
+// o do gráfico), pra dar o mesmo resultado não importa em qual TF você está olhando.
+[mtf1H1, mtf1L1, mtf1H3, mtf1L3, mtf1T2, mtf1T1, mtf1C1] = request.security(syminfo.tickerid, fvgMtfTF1,
+  [high[1], low[1], high[3], low[3], time[2], time[1], close[1]], lookahead = barmerge.lookahead_off)
+[mtf2H1, mtf2L1, mtf2H3, mtf2L3, mtf2T2, mtf2T1, mtf2C1] = request.security(syminfo.tickerid, fvgMtfTF2,
+  [high[1], low[1], high[3], low[3], time[2], time[1], close[1]], lookahead = barmerge.lookahead_off)
+[mtf3H1, mtf3L1, mtf3H3, mtf3L3, mtf3T2, mtf3T1, mtf3C1] = request.security(syminfo.tickerid, fvgMtfTF3,
   [high[1], low[1], high[3], low[3], time[2], time[1], close[1]], lookahead = barmerge.lookahead_off)
 // ta.*() precisa ser chamada 1x por barra, sem condição — nunca dentro de loop/if
 // (senão o histórico interno da função fica errado). Por isso calcula aqui, incondicional,
 // e só usa a variável (essa sim pode ir dentro de loop/if) lá embaixo.
-newMtfBar = ta.change(mtfT1) != 0
+newMtfBar1 = ta.change(mtf1T1) != 0
+newMtfBar2 = ta.change(mtf2T1) != 0
+newMtfBar3 = ta.change(mtf3T1) != 0
 
 type RangeZone
     box   bx
@@ -258,64 +335,29 @@ if inFVG
             // rótulo colado no canto direito enquanto a zona segue viva
             // (zonas MTF usam xloc.bar_time — o "x" tem que ser um timestamp, não bar_index)
             if z.st == 0 or z.st == 2
-                label.set_x(z.lb, z.mtf ? time : bar_index)
-            // transições: zona MTF testa contra o candle do TF maior (fechado, só
-            // reavalia quando ele muda — newMtfBar); zona do gráfico testa
-            // contra o candle do próprio gráfico (barstate.isconfirmed). Se a zona
-            // MTF usasse o preço do gráfico, o resultado (FVG ou iFVG) mudaria
-            // dependendo do TF em que você está olhando — aqui fica sempre igual.
-            if z.mtf
-                if newMtfBar
-                    if z.st == 0
-                        bool entered = z.dir == 1 ? (z.tested or mtfL1 <= z.top) : (z.tested or mtfH1 >= z.btm)
-                        bool thru    = z.dir == 1 ? mtfC1 < z.btm : mtfC1 > z.top
-                        bool out     = z.dir == 1 ? mtfC1 > z.top : mtfC1 < z.btm
-                        if entered and thru
-                            z.st := 2
-                            label.set_text(z.lb, "iFVG " + fvgMtfLabel)
-                        else if entered and out   // mitigado: some do gráfico em vez de congelar cinza
-                            box.delete(z.bx)
-                            label.delete(z.lb)
-                            array.remove(fvgs, i)
-                        else if (z.dir == 1 ? mtfL1 <= z.top : mtfH1 >= z.btm)
-                            z.tested := true
-                    else if z.st == 2
-                        if z.dir == 1 and mtfH1 >= z.btm
-                            box.delete(z.bx)
-                            label.delete(z.lb)
-                            array.remove(fvgs, i)
-                        else if z.dir == -1 and mtfL1 <= z.top
-                            box.delete(z.bx)
-                            label.delete(z.lb)
-                            array.remove(fvgs, i)
+                label.set_x(z.lb, z.mtfSlot > 0 ? time : bar_index)
+            // transições: cada slot MTF testa contra o candle (fechado) do seu
+            // próprio timeframe, só reavaliando quando ele muda (newMtfBarN); a
+            // zona do TF do gráfico testa contra o candle do gráfico
+            // (barstate.isconfirmed). Se a MTF usasse o preço do gráfico, o
+            // resultado (FVG ou iFVG) mudaria dependendo do TF em que você está
+            // olhando — aqui fica sempre igual, não importa o slot.
+            if z.mtfSlot == 1
+                if newMtfBar1
+                    f_fvgTransition(fvgs, i, mtf1H1, mtf1L1, mtf1C1, fvgMtfLabel1)
+            else if z.mtfSlot == 2
+                if newMtfBar2
+                    f_fvgTransition(fvgs, i, mtf2H1, mtf2L1, mtf2C1, fvgMtfLabel2)
+            else if z.mtfSlot == 3
+                if newMtfBar3
+                    f_fvgTransition(fvgs, i, mtf3H1, mtf3L1, mtf3C1, fvgMtfLabel3)
             else if barstate.isconfirmed   // transições SÓ no fechamento da vela (evita repaint intrabar)
-                if z.st == 0
-                    bool entered = z.dir == 1 ? (z.tested or low <= z.top) : (z.tested or high >= z.btm)
-                    bool thru    = z.dir == 1 ? close < z.btm : close > z.top
-                    bool out     = z.dir == 1 ? close > z.top : close < z.btm
-                    if entered and thru
-                        z.st := 2
-                        label.set_text(z.lb, "iFVG")
-                    else if entered and out       // mitigado: some do gráfico em vez de congelar cinza
-                        box.delete(z.bx)
-                        label.delete(z.lb)
-                        array.remove(fvgs, i)
-                    else if (z.dir == 1 ? low <= z.top : high >= z.btm)
-                        z.tested := true
-                else if z.st == 2
-                    if z.dir == 1 and high >= z.btm
-                        box.delete(z.bx)
-                        label.delete(z.lb)
-                        array.remove(fvgs, i)
-                    else if z.dir == -1 and low <= z.top
-                        box.delete(z.bx)
-                        label.delete(z.lb)
-                        array.remove(fvgs, i)
+                f_fvgTransition(fvgs, i, high, low, close, "")
     // detectar novo FVG (c1 = 2 barras atrás, c2 = 1, c3 = atual)
     // SÓ no fechamento da c3: o gap só existe quando a 3ª vela fecha (não meia-vela).
-    // Desligado quando o MTF está marcado — nesse modo só o FVG do timeframe
-    // selecionado (ex.: H4) aparece, pra não sobrepor com o do TF do gráfico.
-    if not inFvgMtf
+    // Desligado quando algum slot MTF está marcado — nesse modo só os FVGs dos
+    // timeframes selecionados aparecem, pra não sobrepor com o do TF do gráfico.
+    if not anyFvgMtfOn
         bullF = high[2] < low[0] and (low[0] - high[2]) >= close * fvgMinPct / 100
         bearF = low[2] > high[0] and (low[2] - high[0]) >= close * fvgMinPct / 100
         if bullF and barstate.isconfirmed
@@ -335,35 +377,13 @@ if inFVG
               color = color.new(color.gray, 100), textcolor = color.new(color.white, 0), size = size.small)
             array.push(fvgs, Zone.new(bx, t, b, -1, 0, lb))
 
-    // ---- FVG MTF: mesmo padrão de 3 velas, mas lido de um timeframe maior ----
-    // mtfH1/mtfL1/mtfH3/mtfL3/mtfT2/mtfT1 vêm do request.security() no topo do
-    // script (não pode ficar dentro de `if`). Usa offsets [1]/[2]/[3] (em vez de
-    // [0]/[1]/[2]) p/ só enxergar velas já fechadas do TF maior — sem repaint.
-    // mtfT1 = open time da vela fechada mais recente (C3): muda 1x por vela do
-    // TF maior, então dispara a criação só uma vez por FVG. mtfT2 = open time de
-    // C2, usado como âncora esquerda da caixa (em xloc.bar_time, já que "1 barra
-    // atrás" do TF maior não bate com bar_index do gráfico).
-    if fvgMtfActive and newMtfBar
-        bool bullM = mtfH3 < mtfL1 and (mtfL1 - mtfH3) >= mtfC1 * fvgMinPct / 100
-        bool bearM = mtfL3 > mtfH1 and (mtfL3 - mtfH1) >= mtfC1 * fvgMinPct / 100
-        if bullM
-            float t = mtfL1
-            float b = mtfH3
-            bx = box.new(mtfT2, t, time, b, xloc = xloc.bar_time, extend = extend.right,
-              border_color = color.new(color.gray, 55), bgcolor = colFvg)
-            lb = label.new(time, (t + b) / 2, "FVG " + fvgMtfLabel, xloc = xloc.bar_time,
-              style = label.style_label_right, color = color.new(color.gray, 100),
-              textcolor = color.new(color.white, 0), size = size.small)
-            array.push(fvgs, Zone.new(bx = bx, top = t, btm = b, dir = 1, st = 0, lb = lb, mtf = true))
-        if bearM
-            float t = mtfL3
-            float b = mtfH1
-            bx = box.new(mtfT2, t, time, b, xloc = xloc.bar_time, extend = extend.right,
-              border_color = color.new(color.gray, 55), bgcolor = colFvg)
-            lb = label.new(time, (t + b) / 2, "FVG " + fvgMtfLabel, xloc = xloc.bar_time,
-              style = label.style_label_right, color = color.new(color.gray, 100),
-              textcolor = color.new(color.white, 0), size = size.small)
-            array.push(fvgs, Zone.new(bx = bx, top = t, btm = b, dir = -1, st = 0, lb = lb, mtf = true))
+    // ---- FVG MTF: mesmo padrão de 3 velas, mas lido de cada timeframe configurado ----
+    if fvgMtfActive1 and newMtfBar1
+        f_fvgMtfCreate(fvgs, 1, mtf1H1, mtf1L1, mtf1H3, mtf1L3, mtf1C1, mtf1T2, fvgMtfLabel1)
+    if fvgMtfActive2 and newMtfBar2
+        f_fvgMtfCreate(fvgs, 2, mtf2H1, mtf2L1, mtf2H3, mtf2L3, mtf2C1, mtf2T2, fvgMtfLabel2)
+    if fvgMtfActive3 and newMtfBar3
+        f_fvgMtfCreate(fvgs, 3, mtf3H1, mtf3L1, mtf3H3, mtf3L3, mtf3C1, mtf3T2, fvgMtfLabel3)
 
     while array.size(fvgs) > fvgKeep
         Zone gone = array.shift(fvgs)
