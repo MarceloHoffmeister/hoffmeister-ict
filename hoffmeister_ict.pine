@@ -42,13 +42,15 @@ obKeep    = input.int(8, "Máx OBs mantidos", minval = 1, maxval = 100, group = 
 colOb  = input.color(color.new(color.silver, 82), "OB ativo",     inline = "oc", group = gO)
 colBrk = input.color(color.new(color.gray,   68), "Breaker (BB)", inline = "oc", group = gO)
 
-gSe = "④ Sessões (Ásia / NY)"
-inSess  = input.bool(true, "Ativar sessões", group = gSe)
-sessTz  = input.string("GMT-4", "Fuso das sessões", group = gSe)
-asiaSes = input.session("1800-0000", "Ásia (18:00–00:00)", group = gSe)
-nySes   = input.session("0700-1200", "NY (07:00–12:00)", group = gSe)
-colAsia = input.color(color.new(color.orange, 90), "Ásia", inline = "se", group = gSe)
-colNY   = input.color(color.new(color.blue,   90), "NY", inline = "se", group = gSe)
+gSe = "④ Sessões (Ásia / Londres / NY)"
+inSess    = input.bool(true, "Ativar sessões", group = gSe)
+sessTz    = input.string("GMT-4", "Fuso das sessões", group = gSe)
+asiaSes   = input.session("1800-0000", "Ásia (18:00–00:00)", group = gSe)
+londonSes = input.session("0200-0500", "Londres (02:00–05:00)", group = gSe)
+nySes     = input.session("0700-1200", "NY (07:00–12:00)", group = gSe)
+colAsia   = input.color(color.new(color.orange, 90), "Ásia",    inline = "se", group = gSe)
+colLondon = input.color(color.new(color.purple, 90), "Londres", inline = "se", group = gSe)
+colNY     = input.color(color.new(color.blue,   90), "NY",      inline = "se", group = gSe)
 
 gR = "⑤ Range / Concentração"
 inRange     = input.bool(true, "Ativar detecção de range", group = gR)
@@ -474,7 +476,7 @@ if inSR
         line.delete(gone.ln)
         label.delete(gone.lb)
 
-// ============================ SESSÕES (Ásia / NY) ============================
+// ============================ SESSÕES (Ásia / Londres / NY) ============================
 // Caixa por dia com o range (high/low) da sessão; borda dashed, cor por sessão.
 // Só renderiza até H1 (intraday) — em H4/Diário sessão não faz sentido.
 var box   aBox = na
@@ -573,6 +575,11 @@ if inRange
 // Caixa presa ao range de preço da janela (igual às sessões/range) — sem extend,
 // sem sombrear a vertical inteira. Só intraday (mesmo critério das sessões).
 if inTZ and timeframe.in_seconds() <= 3600
+var box   lBox = na
+var float lHi  = na
+var float lLo  = na
+var int   lStart = na
+var label lLbl = na
     nyNow = not na(time(timeframe.period, nyTZSes, tzTz))
     if nyNow and not nyNow[1]
         if not na(tzNyBox)          // mantém só a última janela — some a anterior ao abrir a nova
@@ -595,6 +602,22 @@ if inTZ and timeframe.in_seconds() <= 3600
 
     asiaNow = not na(time(timeframe.period, asiaTZSes, tzTz))
     if asiaNow and not asiaNow[1]
+    lNow = not na(time(timeframe.period, londonSes, sessTz))
+    if lNow and not lNow[1]
+        lHi := high
+        lLo := low
+        lStart := bar_index
+        lBox := box.new(bar_index, high, bar_index, low, bgcolor = colLondon,
+          border_color = color.new(color.purple, 40), border_style = line.style_dashed)
+        lLbl := label.new(bar_index, high, "Londres", style = label.style_label_down,
+          color = color.new(color.purple, 100), textcolor = color.new(color.purple, 20), size = size.tiny)
+    else if lNow and not na(lBox)
+        lHi := math.max(lHi, high)
+        lLo := math.min(lLo, low)
+        box.set_top(lBox, lHi)
+        box.set_bottom(lBox, lLo)
+        box.set_right(lBox, bar_index)
+        label.set_xy(lLbl, math.round((lStart + bar_index) / 2), lHi)
         if not na(tzAsiaBox)        // mantém só a última janela — some a anterior ao abrir a nova
             box.delete(tzAsiaBox)
             label.delete(tzAsiaLbl)
