@@ -841,12 +841,13 @@ if inAcc and barstate.isconfirmed
 //    (BOS na direção). Se fechar acima do 2 antes, o 2 é descartado (não é liquidez). Espelho p/ fundos.
 //  • Nivelados (EQH/EQL): 2+ pivôs do mesmo lado a menos de liqEqTol × ATR14 um do outro; o nível
 //    é o mais extremo. Valem por si só (não precisam da confirmação acima).
-// Tomada: o PAVIO passa do nível (high > topo / low < fundo), avaliada no fechamento da barra.
+// Tomada: uma barra do TF da liquidez FECHA além do nível (close > topo / close < fundo) — pavio sozinho
+// não conta. Só então o nível vira tomado e o gatilho libera a contagem das pernas.
 // O nível tomado vira pontilhado cinza com ✕. Sem sinal de entrada — só o evento de tomada
 // (alert(), opcional) para quem quiser acompanhar.
 // Pivôs, validação (BOS) e tolerância dos nivelados vêm do TF da liquidez (liqTF, padrão M15) via
-// request.security; a TOMADA é checada a cada barra do gráfico (pavio), p/ pegar no M1/M5 o toque
-// num nível do M15 assim que acontece. Os pivôs chegam com 1 barra do TF da liquidez de atraso
+// request.security; a TOMADA também usa o fechamento do TF da liquidez (a 1ª barra do gráfico depois
+// do fechamento do M15 abre o contexto do gatilho no M1/M5). Os pivôs chegam com 1 barra do TF da liquidez de atraso
 // ([1] = barra já fechada, sem repaint). Se o gráfico estiver acima do liqTF, usa o TF do gráfico.
 liqTFa   = liqTF == "" ? timeframe.period : liqTF
 liqTFeff = timeframe.in_seconds() > timeframe.in_seconds(liqTFa) ? timeframe.period : liqTFa
@@ -943,7 +944,8 @@ if inLiq and barstate.isconfirmed
                         z.kind := 1
                         f_liqVisual(z)
             else
-                bool swept = z.side == 1 ? high > z.price : low < z.price
+                // tomada = FECHAMENTO (corpo) do TF da liquidez além do nível; só avalia quando uma barra dele fecha
+                bool swept = newHtf and (z.side == 1 ? hCl > z.price : hCl < z.price)
                 if swept
                     if z.side == 1
                         sweepHiNow := true

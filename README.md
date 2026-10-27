@@ -35,15 +35,16 @@ FVG mínimo de $2).
    nivelados* (`EQH`/`EQL`: pivôs a menos de 0,25 × ATR um do outro). Os
    níveis vêm do TF escolhido em "TF da liquidez" (padrão M15, via
    `request.security`; vazio = TF do gráfico);
-   a tomada é checada pelo pavio a cada barra do gráfico. As linhas só são
+   a tomada exige o **fechamento** de uma barra do TF da liquidez além do nível
+   (pavio sozinho não conta). As linhas só são
    desenhadas em gráficos a partir de M15 (input); em TFs menores o nível é
    apenas calculado.
-   A tomada (pavio passa do nível) vira pontilhado cinza com ✕; o aviso
+   A tomada (fechamento além do nível) vira pontilhado cinza com ✕; o aviso
    por `alert()` das tomadas é opcional (desligado).
 10. **Gatilho** — padrão 1-2-3; por padrão só vale depois de uma tomada de
     liquidez do lado certo (input "Exigir tomada", desligável); a tomada é a
-    dos níveis da camada 9, ou seja, do M15 por padrão (o pavio no M1/M2/M5
-    passa de um nível do M15) e as pernas 1-2-3 só contam depois dela; roda
+    dos níveis da camada 9, ou seja, do M15 por padrão (um candle M15 fecha além
+    de um nível) e as pernas 1-2-3 só contam depois dela; roda
     só em gráficos até M5 (input).
     Compra: topo 1 → fundo 2 → topo 3 acima do 1 (pivôs nos fechamentos, como
     no gráfico de linha) → fecha abaixo do fundo 2 → fecha acima do topo 3.
