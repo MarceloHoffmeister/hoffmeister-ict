@@ -115,6 +115,7 @@ trgRR     = input.float(2.0, "Alvo (cálculo, não desenhado): múltiplo do risc
 trgProj   = input.int(24, "Projeção do desenho (barras)", minval = 5, maxval = 200, group = gTg)
 trgKeep   = input.int(10, "Máx sinais desenhados", minval = 1, maxval = 50, group = gTg)
 trgOnClose = input.bool(true, "Pivôs do gatilho nos FECHAMENTOS (como no gráfico de linha); desmarcado = pavios", group = gTg)
+alertSweeps = input.bool(false, "Alerta: incluir também as tomadas de liquidez (gera bem mais avisos)", group = gTg)
 trgMarks  = input.bool(true, "Rótulo COMPRA/VENDA no candle do gatilho (some junto com o POI quando quebrado)", group = gTg)
 colTrgBuy  = input.color(color.new(color.green, 0), "Compra", inline = "tg", group = gTg)
 colTrgSell = input.color(color.new(color.red, 0),   "Venda",  inline = "tg", group = gTg)
@@ -842,7 +843,7 @@ if inAcc and barstate.isconfirmed
 //    é o mais extremo. Valem por si só (não precisam da confirmação acima).
 // Tomada: o PAVIO passa do nível (high > topo / low < fundo), avaliada no fechamento da barra.
 // O nível tomado vira pontilhado cinza com ✕. Sem sinal de entrada — só o evento de tomada
-// (alertcondition) que o gatilho em TF menor vai consumir depois.
+// (alert(), opcional) para quem quiser acompanhar.
 // Pivôs, validação (BOS) e tolerância dos nivelados vêm do TF da liquidez (liqTF, padrão M15) via
 // request.security; a TOMADA é checada a cada barra do gráfico (pavio), p/ pegar no M1/M5 o toque
 // num nível do M15 assim que acontece. Os pivôs chegam com 1 barra do TF da liquidez de atraso
@@ -973,8 +974,6 @@ if inLiq and barstate.isconfirmed
             f_liqAdd(liqs, -1, hPL, hPT, lastLiqPH, tol, liqKeep, htfCl)
             lastLiqPL := hPL
 
-alertcondition(sweepHiNow, "Tomada de liquidez de TOPO", "Liquidez acima tomada")
-alertcondition(sweepLoNow, "Tomada de liquidez de FUNDO", "Liquidez abaixo tomada")
 
 // ============================ GATILHO (1-2-3 → quebra fundo → quebra topo) ============================
 // Desenha o gatilho quando o padrão surge. Com "Exigir tomada de liquidez" (padrão) o 1-2-3 só vale se
@@ -1150,8 +1149,22 @@ if inTrg and trgTfOk and barstate.isconfirmed
 plot(trgLEntry, "Entrada do último gatilho", display = display.data_window)
 plot(trgLStop,  "Stop do último gatilho",    display = display.data_window)
 plot(trgLTp,    "Alvo do último gatilho",    display = display.data_window)
-alertcondition(trgBuyNow,  "Gatilho de COMPRA", "Gatilho de compra: entrada {{plot(\"Entrada do último gatilho\")}}, stop {{plot(\"Stop do último gatilho\")}}, alvo {{plot(\"Alvo do último gatilho\")}}")
-alertcondition(trgSellNow, "Gatilho de VENDA",  "Gatilho de venda: entrada {{plot(\"Entrada do último gatilho\")}}, stop {{plot(\"Stop do último gatilho\")}}, alvo {{plot(\"Alvo do último gatilho\")}}")
+// ============================ ALERTAS ============================
+// Em vez de um alertcondition por evento (o que obrigaria a criar 1 alerta por evento), o script chama
+// alert() — no TradingView basta criar UM alerta por ativo e timeframe, escolhendo a condição
+// "Hoffmeister ICT Lab" → "Qualquer chamada de função alert()" e "Uma vez por fechamento de barra".
+// A mensagem já diz o ativo, o timeframe e se é COMPRA ou VENDA, com entrada, stop e alvo.
+int    tfMin  = timeframe.in_seconds() / 60
+string tfTxt  = tfMin < 60 ? "M" + str.tostring(tfMin) : (tfMin < 1440 ? "H" + str.tostring(tfMin / 60) : timeframe.period)
+string whoTxt = syminfo.ticker + " " + tfTxt
+if trgBuyNow
+    alert(whoTxt + " · COMPRA · entrada " + str.tostring(trgLEntry, format.mintick) + " · stop " + str.tostring(trgLStop, format.mintick) + " · alvo " + str.tostring(trgLTp, format.mintick), alert.freq_once_per_bar_close)
+if trgSellNow
+    alert(whoTxt + " · VENDA · entrada " + str.tostring(trgLEntry, format.mintick) + " · stop " + str.tostring(trgLStop, format.mintick) + " · alvo " + str.tostring(trgLTp, format.mintick), alert.freq_once_per_bar_close)
+if alertSweeps and sweepHiNow
+    alert(whoTxt + " · tomada de liquidez de TOPO", alert.freq_once_per_bar_close)
+if alertSweeps and sweepLoNow
+    alert(whoTxt + " · tomada de liquidez de FUNDO", alert.freq_once_per_bar_close)
 
 
 
