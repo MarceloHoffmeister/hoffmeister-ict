@@ -89,7 +89,7 @@ colAccOff = input.color(color.new(color.aqua, 94), "Acumulação encerrada", inl
 
 gLq = "⑨ Liquidez (swing válido + nivelados)"
 inLiq    = input.bool(true, "Ativar liquidez", group = gLq)
-liqTF    = input.timeframe("", "TF da liquidez (vazio = TF do gráfico; ex.: 15 p/ níveis do M15)", group = gLq)
+liqTF    = input.timeframe("15", "TF da liquidez (vazio = TF do gráfico; padrão M15: também é de onde o gatilho M1/M2/M5 tira a tomada)", group = gLq)
 liqLen   = input.int(5, "Swing lookback (left = right) — no TF da liquidez", minval = 2, group = gLq)
 liqEqTol = input.float(0.25, "Tolerância p/ nivelados (× ATR14)", step = 0.05, minval = 0.0, group = gLq)
 liqDrawTF = input.timeframe("15", "Desenhar as linhas só em gráficos a partir deste TF (abaixo disso só calcula)", group = gLq)

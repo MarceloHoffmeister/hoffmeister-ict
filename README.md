@@ -33,16 +33,18 @@ FVG mínimo de $2).
    *swing válido* (`$$`: o topo 2 só vale se o preço fechar abaixo do fundo 1
    antes de fechar acima do 2; espelho para fundos) e *topos/fundos
    nivelados* (`EQH`/`EQL`: pivôs a menos de 0,25 × ATR um do outro). Os
-   níveis vêm do TF escolhido em "TF da liquidez" (vazio = TF do gráfico; ex.: 15
-   para níveis do M15, via `request.security`);
+   níveis vêm do TF escolhido em "TF da liquidez" (padrão M15, via
+   `request.security`; vazio = TF do gráfico);
    a tomada é checada pelo pavio a cada barra do gráfico. As linhas só são
    desenhadas em gráficos a partir de M15 (input); em TFs menores o nível é
    apenas calculado.
    A tomada (pavio passa do nível) vira pontilhado cinza com ✕; o aviso
    por `alert()` das tomadas é opcional (desligado).
 10. **Gatilho** — padrão 1-2-3; por padrão só vale depois de uma tomada de
-    liquidez do lado certo (input "Exigir tomada", desligável); roda só em
-    gráficos até M5 (input).
+    liquidez do lado certo (input "Exigir tomada", desligável); a tomada é a
+    dos níveis da camada 9, ou seja, do M15 por padrão (o pavio no M1/M2/M5
+    passa de um nível do M15) e as pernas 1-2-3 só contam depois dela; roda
+    só em gráficos até M5 (input).
     Compra: topo 1 → fundo 2 → topo 3 acima do 1 (pivôs nos fechamentos, como
     no gráfico de linha) → fecha abaixo do fundo 2 → fecha acima do topo 3.
     O POI é a caixa entre o extremo da perna de baixa e o topo 3, cobrindo
