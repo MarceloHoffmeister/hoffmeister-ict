@@ -38,8 +38,8 @@ FVG mínimo de $2).
    a tomada é checada pelo pavio a cada barra do gráfico. As linhas só são
    desenhadas em gráficos a partir de M15 (input); em TFs menores o nível é
    apenas calculado.
-   A tomada (pavio passa do nível) vira pontilhado cinza com ✕ e dispara
-   `alertcondition` ("Tomada de liquidez de TOPO/FUNDO").
+   A tomada (pavio passa do nível) vira pontilhado cinza com ✕; o aviso
+   por `alert()` das tomadas é opcional (desligado).
 10. **Gatilho** — padrão 1-2-3; por padrão só vale depois de uma tomada de
     liquidez do lado certo (input "Exigir tomada", desligável); roda só em
     gráficos até M5 (input).
@@ -51,7 +51,9 @@ FVG mínimo de $2).
     Window e no texto do alerta. Venda é o espelho. Se o preço fechar além da
     borda oposta do POI (acima do topo numa venda, abaixo do fundo numa compra),
     a caixa, a linha de entrada e o rótulo COMPRA/VENDA somem. Só
-    desenha (sem ordem/estratégia) e dispara `alertcondition`.
+    desenha (sem ordem/estratégia) e avisa por `alert()`: crie **um** alerta por ativo e timeframe
+    (condição "Qualquer chamada de função alert()", uma vez por fechamento
+    de barra); a mensagem traz ativo, TF, COMPRA/VENDA, entrada, stop e alvo.
 
 ## Instalação no TradingView
 
