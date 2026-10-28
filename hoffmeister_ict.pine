@@ -869,6 +869,11 @@ liqAtr = ta.atr(14)            // ATR do TF do gráfico (o gatilho usa p/ tamanh
 var array<float> htfCl = array.new<float>()   // últimos fechamentos do TF da liquidez
 bool sweepHiNow = false   // algum nível de topo foi tomado nesta barra
 bool sweepLoNow = false
+float sweepHiPx = na      // nível tomado nesta barra (preço, tipo e horário do candle do TF da liquidez que fechou além)
+float sweepLoPx = na
+string sweepHiTxt = ""
+string sweepLoTxt = ""
+int sweepT = sameTF ? time[1] : sT1
 
 // cria/atualiza o desenho (linha + rótulo) de um nível; respeita os toggles de exibição.
 // z.bar guarda o TEMPO do pivô (xloc.bar_time): o pivô vem de outro timeframe.
@@ -949,8 +954,12 @@ if inLiq and barstate.isconfirmed
                 if swept
                     if z.side == 1
                         sweepHiNow := true
+                        sweepHiPx  := z.price
+                        sweepHiTxt := z.kind == 2 ? "EQH" : "$$"
                     else
                         sweepLoNow := true
+                        sweepLoPx  := z.price
+                        sweepLoTxt := z.kind == 2 ? "EQL" : "$$"
                     if not na(z.ln)
                         line.set_x2(z.ln, time)
                         line.set_style(z.ln, line.style_dotted)
@@ -1002,6 +1011,7 @@ bool trgSellNow = false
 var float trgLEntry = na   // níveis do ÚLTIMO gatilho: calculados, não desenhados (Data Window e texto do alerta)
 var float trgLStop  = na
 var float trgLTp    = na
+var string trgLInfo = ""   // texto da tomada que liberou o último gatilho
 
 var array<float> pvP = array.new<float>()   // últimos pivôs do gatilho, alternados (topo/fundo)
 var array<int>   pvB = array.new<int>()
@@ -1015,6 +1025,9 @@ var array<int>   cB3   = array.new<int>(2, na)
 var array<float> cExt  = array.new<float>(2, na)   // extremo da perna pelo CORPO → borda do POI
 var array<float> cExtW = array.new<float>(2, na)   // extremo da perna pelo PAVIO → stop
 var array<int>   cxBar = array.new<int>(2, na)     // contexto: barra da última tomada/extremo do lado (0 = fundo→compra, 1 = topo→venda)
+var array<float> cxLvPx  = array.new<float>(2, na)   // nível que abriu o contexto (preço, tipo, horário): vai pro alerta e pro tooltip
+var array<string> cxLvTxt = array.new<string>(2, "")
+var array<int>   cxLvT   = array.new<int>(2, na)
 var array<float> cxPx  = array.new<float>(2, na)   // extremo da tomada (menor low p/ compra, maior high p/ venda)
 
 bool trgTfOk = timeframe.in_seconds() <= timeframe.in_seconds(trgMaxTF)   // gatilho só do M5 pra baixo
@@ -1050,6 +1063,9 @@ if inTrg and trgTfOk and barstate.isconfirmed
             cb := bar_index
             cp := dc == 1 ? low : high
             array.set(cSt, i, 0)   // tomada nova: o 1-2-3 pendente era de ANTES dela, descarta
+            array.set(cxLvPx, i, i == 0 ? sweepLoPx : sweepHiPx)
+            array.set(cxLvTxt, i, i == 0 ? sweepLoTxt : sweepHiTxt)
+            array.set(cxLvT, i, sweepT)
         else if not na(cb)
             if bar_index - cb > trgWin
                 cb := na
@@ -1120,6 +1136,9 @@ if inTrg and trgTfOk and barstate.isconfirmed
                     float poiBot = d == 1 ? exe : p3e
                     bool useMid = trgEntry == "50% do POI" or (trgEntry == "Auto" and (poiTop - poiBot) > trgBigAtr * liqAtr)
                     float entryPx = useMid ? (poiTop + poiBot) / 2 : (d == 1 ? poiTop : poiBot)
+                    float lvPx = array.get(cxLvPx, i)
+                    trgLInfo := na(lvPx) ? "" : "tomou " + array.get(cxLvTxt, i) + " " + str.tostring(lvPx, format.mintick) +
+                      " (fechamento " + liqTFeff + " " + str.format_time(array.get(cxLvT, i), "dd/MM HH:mm", syminfo.timezone) + ")"
                     trgLEntry := entryPx
                     trgLStop := d == 1 ? extW - trgStopBuf * liqAtr : extW + trgStopBuf * liqAtr
                     trgLTp := entryPx + d * trgRR * math.abs(entryPx - trgLStop)
@@ -1131,7 +1150,7 @@ if inTrg and trgTfOk and barstate.isconfirmed
                     if trgMarks
                         lm := label.new(bar_index, d == 1 ? low : high, d == 1 ? "COMPRA" : "VENDA",
                           style = d == 1 ? label.style_label_up : label.style_label_down,
-                          color = color.new(cT, 25), textcolor = color.white, size = size.small)
+                          color = color.new(cT, 25), textcolor = color.white, size = size.small, tooltip = trgLInfo)
                     array.push(trgSigs, TrgSig.new(bx, le, lm, poiTop, poiBot, d))
                     while array.size(trgSigs) > trgKeep
                         TrgSig gone = array.shift(trgSigs)
@@ -1160,9 +1179,9 @@ int    tfMin  = timeframe.in_seconds() / 60
 string tfTxt  = tfMin < 60 ? "M" + str.tostring(tfMin) : (tfMin < 1440 ? "H" + str.tostring(tfMin / 60) : timeframe.period)
 string whoTxt = syminfo.ticker + " " + tfTxt
 if trgBuyNow
-    alert(whoTxt + " · COMPRA · entrada " + str.tostring(trgLEntry, format.mintick) + " · stop " + str.tostring(trgLStop, format.mintick) + " · alvo " + str.tostring(trgLTp, format.mintick), alert.freq_once_per_bar_close)
+    alert(whoTxt + " · COMPRA · entrada " + str.tostring(trgLEntry, format.mintick) + " · stop " + str.tostring(trgLStop, format.mintick) + " · alvo " + str.tostring(trgLTp, format.mintick) + (trgLInfo == "" ? "" : " · " + trgLInfo), alert.freq_once_per_bar_close)
 if trgSellNow
-    alert(whoTxt + " · VENDA · entrada " + str.tostring(trgLEntry, format.mintick) + " · stop " + str.tostring(trgLStop, format.mintick) + " · alvo " + str.tostring(trgLTp, format.mintick), alert.freq_once_per_bar_close)
+    alert(whoTxt + " · VENDA · entrada " + str.tostring(trgLEntry, format.mintick) + " · stop " + str.tostring(trgLStop, format.mintick) + " · alvo " + str.tostring(trgLTp, format.mintick) + (trgLInfo == "" ? "" : " · " + trgLInfo), alert.freq_once_per_bar_close)
 if alertSweeps and sweepHiNow
     alert(whoTxt + " · tomada de liquidez de TOPO", alert.freq_once_per_bar_close)
 if alertSweeps and sweepLoNow

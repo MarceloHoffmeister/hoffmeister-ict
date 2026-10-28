@@ -44,7 +44,8 @@ FVG mínimo de $2).
 10. **Gatilho** — padrão 1-2-3; por padrão só vale depois de uma tomada de
     liquidez do lado certo (input "Exigir tomada", desligável); a tomada é a
     dos níveis da camada 9, ou seja, do M15 por padrão (um candle M15 fecha além
-    de um nível) e as pernas 1-2-3 só contam depois dela; roda
+    de um nível) e as pernas 1-2-3 só contam depois dela; o alerta e o
+    tooltip do rótulo dizem qual nível foi tomado (tipo, preço e horário); roda
     só em gráficos até M5 (input).
     Compra: topo 1 → fundo 2 → topo 3 acima do 1 (pivôs nos fechamentos, como
     no gráfico de linha) → fecha abaixo do fundo 2 → fecha acima do topo 3.
