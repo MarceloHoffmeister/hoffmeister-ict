@@ -309,10 +309,13 @@ if inTrg and trgTfOk and barstate.isconfirmed
         newPiv := true
     // contexto (tomada): cada tomada abre/reinicia o contexto do lado; novo extremo na mesma direção
     // reinicia (o 1-2-3 tem de vir DEPOIS do último extremo); tomada/extremo novo também descarta o
-    // 1-2-3 que já estava pendente (ele nasceu antes da tomada); o contexto expira em trgWin barras
+    // 1-2-3 que já estava pendente (ele nasceu antes da tomada); o contexto expira em trgWin barras.
+    // Tomada do lado OPOSTO cancela o contexto (e o 1-2-3 pendente): a última tomada manda — se o preço
+    // topou e depois tomou fundos, a venda já foi entregue e uma compra nova depende da tomada dos fundos.
     for i = 0 to 1
         int dc = i == 0 ? 1 : -1
         bool startedC = i == 0 ? sweepLoNow : sweepHiNow
+        bool oppC = i == 0 ? sweepHiNow : sweepLoNow
         int cb = array.get(cxBar, i)
         float cp = array.get(cxPx, i)
         if startedC
@@ -322,6 +325,9 @@ if inTrg and trgTfOk and barstate.isconfirmed
             array.set(cxLvPx, i, i == 0 ? sweepLoPx : sweepHiPx)
             array.set(cxLvTxt, i, i == 0 ? sweepLoTxt : sweepHiTxt)
             array.set(cxLvT, i, sweepT)
+        else if oppC and trgNeedCtx
+            cb := na
+            array.set(cSt, i, 0)
         else if not na(cb)
             if bar_index - cb > trgWin
                 cb := na
