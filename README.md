@@ -43,16 +43,17 @@ lab de backtest em Python:
    nivelados* (`EQH`/`EQL`: pivôs a menos de 0,25 × ATR um do outro). Os
    níveis vêm do TF escolhido em "TF da liquidez" (padrão M15, via
    `request.security`; vazio = TF do gráfico);
-   a tomada exige o **fechamento** de uma barra do TF da liquidez além do nível
-   (pavio sozinho não conta). As linhas só são
+   a tomada segue o input "Critério da tomada": **Pavio** (padrão: high/low de uma
+   barra do gráfico passa do nível), **Fechamento** (uma barra do TF da liquidez
+   fecha além do nível) ou **Ambos** (um ou outro). As linhas só são
    desenhadas em gráficos a partir de M15 (input); em TFs menores o nível é
    apenas calculado.
-   A tomada (fechamento além do nível) vira pontilhado cinza com ✕; o aviso
+   A tomada vira pontilhado cinza com ✕; o aviso
    por `alert()` das tomadas é opcional (desligado).
 2. **Gatilho** — padrão 1-2-3; por padrão só vale depois de uma tomada de
     liquidez do lado certo (input "Exigir tomada", desligável); a tomada é a
-    dos níveis da camada de Liquidez, ou seja, do M15 por padrão (um candle M15 fecha além
-    de um nível) e as pernas 1-2-3 só contam depois dela; o alerta e o
+    dos níveis da camada de Liquidez, ou seja, do M15 por padrão (pelo critério escolhido: pavio
+    ou fechamento do M15 além de um nível) e as pernas 1-2-3 só contam depois dela; o alerta e o
     tooltip do rótulo dizem qual nível foi tomado (tipo, preço e horário); roda
     só em gráficos até M5 (input).
     Compra: topo 1 → fundo 2 → topo 3 acima do 1 (pivôs nos fechamentos, como

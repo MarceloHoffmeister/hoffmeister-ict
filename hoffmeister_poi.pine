@@ -16,6 +16,7 @@ liqEqTol = input.float(0.25, "Tolerância p/ nivelados (× ATR14)", step = 0.05,
 liqDrawTF = input.timeframe("15", "Desenhar as linhas só em gráficos a partir deste TF (abaixo disso só calcula)", group = gLq)
 liqShowSw = input.bool(true, "Mostrar swing válido ($$)", group = gLq)
 liqShowEq = input.bool(true, "Mostrar topos/fundos nivelados (EQH/EQL)", group = gLq)
+liqMode  = input.string("Pavio", "Critério da tomada (Pavio = qualquer toque além do nível, a cada barra do gráfico; Fechamento = fecha uma barra do TF da liquidez além; Ambos = um OU outro)", options = ["Pavio", "Fechamento", "Ambos"], group = gLq)
 liqKeep  = input.int(60, "Capacidade de níveis (vivos + pendentes)", minval = 5, maxval = 200, group = gLq)
 liqKeepSw = input.int(10, "Máx níveis tomados mantidos", minval = 0, maxval = 100, group = gLq)
 colLiqH  = input.color(color.new(color.fuchsia, 25), "Liquidez acima (topos)",  inline = "lq", group = gLq)
@@ -97,13 +98,14 @@ f_pvPush(array<float> pr, array<int> br, array<int> tp, float p, int b, int t, i
 //    (BOS na direção). Se fechar acima do 2 antes, o 2 é descartado (não é liquidez). Espelho p/ fundos.
 //  • Nivelados (EQH/EQL): 2+ pivôs do mesmo lado a menos de liqEqTol × ATR14 um do outro; o nível
 //    é o mais extremo. Valem por si só (não precisam da confirmação acima).
-// Tomada: uma barra do TF da liquidez FECHA além do nível (close > topo / close < fundo) — pavio sozinho
-// não conta. Só então o nível vira tomado e o gatilho libera a contagem das pernas.
+// Tomada (input "Critério da tomada"): Pavio = high/low de uma barra do gráfico passa do nível (padrão);
+// Fechamento = uma barra do TF da liquidez FECHA além (close > topo / close < fundo); Ambos = um OU outro.
+// Só então o nível vira tomado e o gatilho libera a contagem das pernas.
 // O nível tomado vira pontilhado cinza com ✕. Sem sinal de entrada — só o evento de tomada
 // (alert(), opcional) para quem quiser acompanhar.
 // Pivôs, validação (BOS) e tolerância dos nivelados vêm do TF da liquidez (liqTF, padrão M15) via
-// request.security; a TOMADA também usa o fechamento do TF da liquidez (a 1ª barra do gráfico depois
-// do fechamento do M15 abre o contexto do gatilho no M1/M5). Os pivôs chegam com 1 barra do TF da liquidez de atraso
+// request.security; a tomada por FECHAMENTO usa o close do TF da liquidez (a 1ª barra do gráfico depois
+// do fechamento do M15 abre o contexto do gatilho no M1/M5); a por PAVIO vale na própria barra do gráfico. Os pivôs chegam com 1 barra do TF da liquidez de atraso
 // ([1] = barra já fechada, sem repaint). Se o gráfico estiver acima do liqTF, usa o TF do gráfico.
 liqTFa   = liqTF == "" ? timeframe.period : liqTF
 liqTFeff = timeframe.in_seconds() > timeframe.in_seconds(liqTFa) ? timeframe.period : liqTFa
@@ -130,6 +132,8 @@ float sweepLoPx = na
 string sweepHiTxt = ""
 string sweepLoTxt = ""
 int sweepT = sameTF ? time[1] : sT1
+bool swByWick  = liqMode != "Fechamento"
+bool swByClose = liqMode != "Pavio"
 
 // cria/atualiza o desenho (linha + rótulo) de um nível; respeita os toggles de exibição.
 // z.bar guarda o TEMPO do pivô (xloc.bar_time): o pivô vem de outro timeframe.
@@ -205,9 +209,13 @@ if inLiq and barstate.isconfirmed
                         z.kind := 1
                         f_liqVisual(z)
             else
-                // tomada = FECHAMENTO (corpo) do TF da liquidez além do nível; só avalia quando uma barra dele fecha
-                bool swept = newHtf and (z.side == 1 ? hCl > z.price : hCl < z.price)
+                // tomada = PAVIO (high/low da barra do gráfico além do nível) e/ou FECHAMENTO do TF da liquidez
+                // além do nível (só avalia quando uma barra dele fecha), conforme "Critério da tomada"
+                bool wickHit  = swByWick and (z.side == 1 ? high > z.price : low < z.price)
+                bool closeHit = swByClose and newHtf and (z.side == 1 ? hCl > z.price : hCl < z.price)
+                bool swept = wickHit or closeHit
                 if swept
+                    sweepT := wickHit ? time : (sameTF ? time[1] : sT1)
                     if z.side == 1
                         sweepHiNow := true
                         sweepHiPx  := z.price
