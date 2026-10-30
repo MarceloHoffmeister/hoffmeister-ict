@@ -27,6 +27,8 @@ inTrg     = input.bool(true, "Ativar gatilho (independe da liquidez/tomada)", gr
 trgMaxTF  = input.timeframe("5", "Gatilho só roda em gráficos até este TF", group = gTg)
 trgLen    = input.int(2, "Swing lookback do gatilho (left = right)", minval = 1, group = gTg)
 trgWin    = input.int(72, "Janela máx. do topo/fundo 3 até o gatilho (barras)", minval = 5, group = gTg)
+trgModel  = input.string("Velas", "Modelo do gatilho (Velas = 1 alta · 2 baixa · 3 alta · 4 quebra o 2 · 5 fecha além do 3; Pivôs 1-2-3 = topo/fundo/topo por pivô)", options = ["Velas", "Pivôs 1-2-3"], group = gTg)
+trgWinC   = input.int(30, "Velas: janela máx. do fim do 3 até o 5 (barras)", minval = 3, group = gTg)
 trgNeedCtx = input.bool(true, "Exigir tomada de liquidez antes do 1-2-3 (o 1, 2 e 3 têm de vir depois da última tomada do lado certo)", group = gTg)
 trgMinExc = input.float(0.0, "Folga mín. do 3 sobre o 1 (× ATR; 0 = qualquer)", step = 0.1, minval = 0.0, group = gTg)
 trgPoiMode = input.string("Pavio", "POI cobre os extremos da perna pelo", options = ["Pavio", "Corpo"], group = gTg)
@@ -36,6 +38,7 @@ trgStopBuf = input.float(0.1, "Stop (cálculo, não desenhado): buffer além do 
 trgRR     = input.float(2.0, "Alvo (cálculo, não desenhado): múltiplo do risco", step = 0.5, minval = 0.5, group = gTg)
 trgProj   = input.int(24, "Projeção do desenho (barras)", minval = 5, maxval = 200, group = gTg)
 trgKeep   = input.int(10, "Máx sinais desenhados", minval = 1, maxval = 50, group = gTg)
+trgKeepBroken = input.bool(false, "Manter o POI quebrado no gráfico (para revisar o histórico; normalmente some quando o preço fecha além da borda oposta)", group = gTg)
 trgOnClose = input.bool(true, "Pivôs do gatilho nos FECHAMENTOS (como no gráfico de linha); desmarcado = pavios", group = gTg)
 alertSweeps = input.bool(false, "Alerta: incluir também as tomadas de liquidez (gera bem mais avisos)", group = gTg)
 trgMarks  = input.bool(true, "Rótulo COMPRA/VENDA no candle do gatilho (some junto com o POI quando quebrado)", group = gTg)
@@ -67,6 +70,18 @@ type TrgSig
     int   dir   // 1 = compra, -1 = venda
 
 var array<TrgSig> trgSigs = array.new<TrgSig>()
+
+// sequência de velas da mesma cor (modelo "Velas"); doji conta como vela de baixa
+type CRun
+    int   col      // 1 = alta, -1 = baixa
+    int   bar0     // barra em que a sequência começou
+    int   hiBar    // barra da máxima / mínima da sequência
+    int   loBar
+    float hi       // extremos pelo pavio
+    float lo
+    float hiB      // extremos pelo corpo
+    float loB
+    float cl       // fechamento da última vela da sequência
 
 // guarda o pivô mantendo a sequência alternada: 2 do mesmo tipo seguidos → fica o mais extremo
 f_pvPush(array<float> pr, array<int> br, array<int> tp, float p, int b, int t, int cap) =>
@@ -294,6 +309,49 @@ var array<string> cxLvTxt = array.new<string>(2, "")
 var array<int>   cxLvT   = array.new<int>(2, na)
 var array<float> cxPx  = array.new<float>(2, na)   // extremo da tomada (menor low p/ compra, maior high p/ venda)
 
+// modelo "Velas": 2 candidatos (0 = compra, 1 = venda). st: 0 nenhum · 1 espera quebra do 2 · 2 espera fechar além do 3
+var array<int>   cvSt   = array.new<int>(2, 0)
+var array<int>   cvBar  = array.new<int>(2, na)     // barra em que o 3 terminou (armou)
+var array<float> cvP2   = array.new<float>(2, na)   // ponto 2: mínima das velas de baixa (compra) / máxima das de alta (venda)
+var array<float> cvP3   = array.new<float>(2, na)   // ponto 3 pelo pavio
+var array<float> cvP3B  = array.new<float>(2, na)   // ponto 3 pelo corpo
+var array<int>   cvB3   = array.new<int>(2, na)     // barra do extremo do 3 (borda esquerda do POI)
+var array<float> cvExt  = array.new<float>(2, na)   // extremo da perna 3-4 pelo corpo
+var array<float> cvExtW = array.new<float>(2, na)   // extremo da perna 3-4 pelo pavio
+var CRun r0 = na   // sequência em andamento
+var CRun r1 = na   // a anterior
+var CRun r2 = na   // a anterior a essa
+
+// texto da tomada que liberou o gatilho (alerta e tooltip)
+f_trgInfo(int i) =>
+    float lvPx = array.get(cxLvPx, i)
+    na(lvPx) ? "" : "tomou " + array.get(cxLvTxt, i) + " " + str.tostring(lvPx, format.mintick) +
+      " (fechamento " + liqTFeff + " " + str.format_time(array.get(cxLvT, i), "dd/MM HH:mm", syminfo.timezone) + ")"
+
+// desenha o POI do gatilho e devolve [entrada, stop, alvo]; usado pelos dois modelos
+f_trgDraw(int d, float poiTop, float poiBot, float extW, int leftBar, string info) =>
+    bool useMid = trgEntry == "50% do POI" or (trgEntry == "Auto" and (poiTop - poiBot) > trgBigAtr * liqAtr)
+    float entryPx = useMid ? (poiTop + poiBot) / 2 : (d == 1 ? poiTop : poiBot)
+    float stopPx = d == 1 ? extW - trgStopBuf * liqAtr : extW + trgStopBuf * liqAtr
+    float tpPx = entryPx + d * trgRR * math.abs(entryPx - stopPx)
+    int xr = bar_index + trgProj
+    color cT = d == 1 ? colTrgBuy : colTrgSell
+    box bx = box.new(leftBar, poiTop, xr, poiBot, border_color = color.new(cT, 40), bgcolor = color.new(cT, 88))
+    line le = line.new(bar_index, entryPx, xr, entryPx, color = color.new(color.white, 15), width = 1)
+    label lm = na
+    if trgMarks
+        lm := label.new(bar_index, d == 1 ? low : high, d == 1 ? "COMPRA" : "VENDA",
+          style = d == 1 ? label.style_label_up : label.style_label_down,
+          color = color.new(cT, 25), textcolor = color.white, size = size.small, tooltip = info)
+    array.push(trgSigs, TrgSig.new(bx, le, lm, poiTop, poiBot, d))
+    while array.size(trgSigs) > trgKeep
+        TrgSig gone = array.shift(trgSigs)
+        box.delete(gone.bx)
+        line.delete(gone.le)
+        if not na(gone.lm)
+            label.delete(gone.lm)
+    [entryPx, stopPx, tpPx]
+
 bool trgTfOk = timeframe.in_seconds() <= timeframe.in_seconds(trgMaxTF)   // gatilho só do M5 pra baixo
 if inTrg and trgTfOk and barstate.isconfirmed
     // POI quebrado some: venda → fechamento ACIMA do topo da caixa; compra → fechamento ABAIXO do fundo
@@ -301,7 +359,7 @@ if inTrg and trgTfOk and barstate.isconfirmed
         for i = array.size(trgSigs) - 1 to 0
             TrgSig g = array.get(trgSigs, i)
             bool poiBroken = g.dir == -1 ? close > g.top : close < g.bot
-            if poiBroken
+            if poiBroken and not trgKeepBroken
                 box.delete(g.bx)
                 line.delete(g.le)
                 if not na(g.lm)
@@ -330,12 +388,14 @@ if inTrg and trgTfOk and barstate.isconfirmed
             cb := bar_index
             cp := dc == 1 ? low : high
             array.set(cSt, i, 0)   // tomada nova: o 1-2-3 pendente era de ANTES dela, descarta
+            array.set(cvSt, i, 0)
             array.set(cxLvPx, i, i == 0 ? sweepLoPx : sweepHiPx)
             array.set(cxLvTxt, i, i == 0 ? sweepLoTxt : sweepHiTxt)
             array.set(cxLvT, i, sweepT)
         else if oppC and trgNeedCtx
             cb := na
             array.set(cSt, i, 0)
+            array.set(cvSt, i, 0)
         else if not na(cb)
             if bar_index - cb > trgWin
                 cb := na
@@ -343,10 +403,11 @@ if inTrg and trgTfOk and barstate.isconfirmed
                 cb := bar_index
                 cp := dc == 1 ? low : high
                 array.set(cSt, i, 0)   // a tomada ainda avançou (novo extremo): também descarta o pendente
+                array.set(cvSt, i, 0)
         array.set(cxBar, i, cb)
         array.set(cxPx, i, cp)
     int np = array.size(pvP)
-    if newPiv and np >= 3
+    if trgModel == "Pivôs 1-2-3" and newPiv and np >= 3
         float px1 = array.get(pvP, np - 3)
         float px2 = array.get(pvP, np - 2)
         float px3 = array.get(pvP, np - 1)
@@ -402,32 +463,12 @@ if inTrg and trgTfOk and barstate.isconfirmed
                     bool wickPoi = trgPoiMode == "Pavio"
                     float p3e = wickPoi ? (d == 1 ? high[bar_index - b3] : low[bar_index - b3]) : p3   // lado do 3: pavio do candle do 3
                     float exe = wickPoi ? extW : ext                                                    // lado da perna: extremo de pavio
-                    float poiTop = d == 1 ? p3e : exe
-                    float poiBot = d == 1 ? exe : p3e
-                    bool useMid = trgEntry == "50% do POI" or (trgEntry == "Auto" and (poiTop - poiBot) > trgBigAtr * liqAtr)
-                    float entryPx = useMid ? (poiTop + poiBot) / 2 : (d == 1 ? poiTop : poiBot)
-                    float lvPx = array.get(cxLvPx, i)
-                    trgLInfo := na(lvPx) ? "" : "tomou " + array.get(cxLvTxt, i) + " " + str.tostring(lvPx, format.mintick) +
-                      " (fechamento " + liqTFeff + " " + str.format_time(array.get(cxLvT, i), "dd/MM HH:mm", syminfo.timezone) + ")"
-                    trgLEntry := entryPx
-                    trgLStop := d == 1 ? extW - trgStopBuf * liqAtr : extW + trgStopBuf * liqAtr
-                    trgLTp := entryPx + d * trgRR * math.abs(entryPx - trgLStop)
-                    int xr = bar_index + trgProj
-                    color cT = d == 1 ? colTrgBuy : colTrgSell
-                    bx = box.new(b3, poiTop, xr, poiBot, border_color = color.new(cT, 40), bgcolor = color.new(cT, 88))
-                    le = line.new(bar_index, entryPx, xr, entryPx, color = color.new(color.white, 15), width = 1)
-                    label lm = na
-                    if trgMarks
-                        lm := label.new(bar_index, d == 1 ? low : high, d == 1 ? "COMPRA" : "VENDA",
-                          style = d == 1 ? label.style_label_up : label.style_label_down,
-                          color = color.new(cT, 25), textcolor = color.white, size = size.small, tooltip = trgLInfo)
-                    array.push(trgSigs, TrgSig.new(bx, le, lm, poiTop, poiBot, d))
-                    while array.size(trgSigs) > trgKeep
-                        TrgSig gone = array.shift(trgSigs)
-                        box.delete(gone.bx)
-                        line.delete(gone.le)
-                        if not na(gone.lm)
-                            label.delete(gone.lm)
+                    string info = f_trgInfo(i)
+                    [fe, fs, ft] = f_trgDraw(d, d == 1 ? p3e : exe, d == 1 ? exe : p3e, extW, b3, info)
+                    trgLInfo := info
+                    trgLEntry := fe
+                    trgLStop := fs
+                    trgLTp := ft
                     if d == 1
                         trgBuyNow := true
                     else
@@ -436,6 +477,80 @@ if inTrg and trgTfOk and barstate.isconfirmed
             array.set(cSt, i, st)
             array.set(cExt, i, ext)
             array.set(cExtW, i, extW)
+
+    // ---- modelo "Velas" ----
+    // 1: sequência de velas de alta · 2: sequência de velas de baixa · 3: sequência de alta que FECHA acima da
+    // máxima do 2 · 4: fecha (corpo) abaixo da mínima do 2 · 5: fecha (corpo) acima da máxima do 3 = gatilho.
+    // O POI é a perna 3→4 (máxima do 3 até o extremo da queda). Venda = espelho. Com "Exigir tomada", o 1 tem
+    // de começar depois da última tomada/extremo do lado certo. O 3 não precisa passar o 1.
+    if trgModel == "Velas"
+        int ccol = close > open ? 1 : -1
+        if na(r0)
+            r0 := CRun.new(ccol, bar_index, bar_index, bar_index, high, low, math.max(open, close), math.min(open, close), close)
+        else if r0.col == ccol
+            if high > r0.hi
+                r0.hi := high
+                r0.hiBar := bar_index
+            if low < r0.lo
+                r0.lo := low
+                r0.loBar := bar_index
+            r0.hiB := math.max(r0.hiB, math.max(open, close))
+            r0.loB := math.min(r0.loB, math.min(open, close))
+            r0.cl := close
+        else
+            // o 3 acabou (a vela atual abre a sequência seguinte): arma se 1, 2 e 3 forem válidos
+            if not na(r1) and not na(r2)
+                for i = 0 to 1
+                    int dc = i == 0 ? 1 : -1
+                    int cb = array.get(cxBar, i)
+                    bool ctxOk = not trgNeedCtx or (not na(cb) and r2.bar0 >= cb)
+                    bool shape = r0.col == dc and r1.col == -dc and r2.col == dc and (dc == 1 ? r0.cl > r1.hi : r0.cl < r1.lo)
+                    if ctxOk and shape
+                        array.set(cvSt, i, 1)
+                        array.set(cvBar, i, bar_index)
+                        array.set(cvP2, i, dc == 1 ? r1.lo : r1.hi)
+                        array.set(cvP3, i, dc == 1 ? r0.hi : r0.lo)
+                        array.set(cvP3B, i, dc == 1 ? r0.hiB : r0.loB)
+                        array.set(cvB3, i, dc == 1 ? r0.hiBar : r0.loBar)
+                        array.set(cvExt, i, dc == 1 ? math.min(open, close) : math.max(open, close))
+                        array.set(cvExtW, i, dc == 1 ? low : high)
+            r2 := r1
+            r1 := r0
+            r0 := CRun.new(ccol, bar_index, bar_index, bar_index, high, low, math.max(open, close), math.min(open, close), close)
+        for i = 0 to 1
+            int dv = i == 0 ? 1 : -1
+            int sv = array.get(cvSt, i)
+            if sv > 0
+                if bar_index - array.get(cvBar, i) > trgWinC
+                    sv := 0
+                else
+                    float xw = array.get(cvExtW, i)
+                    float xb = array.get(cvExt, i)
+                    xw := dv == 1 ? math.min(xw, low) : math.max(xw, high)
+                    xb := dv == 1 ? math.min(xb, math.min(open, close)) : math.max(xb, math.max(open, close))
+                    array.set(cvExtW, i, xw)
+                    array.set(cvExt, i, xb)
+                    float q2 = array.get(cvP2, i)
+                    float q3 = array.get(cvP3, i)
+                    if sv == 1
+                        if dv * (close - q2) < 0   // 4: fecha além do 2
+                            sv := 2
+                    else if dv * (close - q3) > 0   // 5: fecha além do 3 = gatilho
+                        bool wk = trgPoiMode == "Pavio"
+                        float q3e = wk ? q3 : array.get(cvP3B, i)
+                        float exv = wk ? xw : xb
+                        string info = f_trgInfo(i)
+                        [fe, fs, ft] = f_trgDraw(dv, dv == 1 ? q3e : exv, dv == 1 ? exv : q3e, xw, array.get(cvB3, i), info)
+                        trgLInfo := info
+                        trgLEntry := fe
+                        trgLStop := fs
+                        trgLTp := ft
+                        if dv == 1
+                            trgBuyNow := true
+                        else
+                            trgSellNow := true
+                        sv := 0
+            array.set(cvSt, i, sv)
 
 plot(trgLEntry, "Entrada do último gatilho", display = display.data_window)
 plot(trgLStop,  "Stop do último gatilho",    display = display.data_window)
