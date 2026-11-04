@@ -39,7 +39,7 @@ lab de backtest em Python:
 
 1. **Liquidez** — fontes de liquidez do setup "tomada → reversão":
    *swing válido* (`$$`: o topo 2 só vale se o preço fechar abaixo do fundo 1
-   antes de fechar acima do 2; espelho para fundos) e *topos/fundos
+   antes de fechar acima do 2; espelho para fundos), só a favor da tendência por padrão (topo mais baixo / fundo mais alto que o pivô anterior; input "Swing válido só a favor da tendência") e *topos/fundos
    nivelados* (`EQH`/`EQL`: pivôs a menos de 0,25 × ATR um do outro). Os
    níveis vêm do TF escolhido em "TF da liquidez" (padrão M15, via
    `request.security`; vazio = TF do gráfico);
@@ -56,7 +56,15 @@ lab de backtest em Python:
     ou fechamento do M15 além de um nível) e as pernas 1-2-3 só contam depois dela; o alerta e o
     tooltip do rótulo dizem qual nível foi tomado (tipo, preço e horário); roda
     só em gráficos até M5 (input).
-    Compra: topo 1 → fundo 2 → topo 3 acima do 1 (pivôs nos fechamentos, como
+    Input "Modelo do gatilho": **Velas** (padrão) ou **Pivôs 1-2-3**. No modelo
+    Velas, a compra é: 1 sequência de velas de alta → 2 sequência de velas de
+    baixa (doji é ignorado) → 3 sequência de alta que fecha acima da máxima
+    do 2 → 4 fecha abaixo da mínima do 2 → 5 fecha acima da máxima do 3 (gatilho,
+    em até "janela" barras depois do 3). O POI é só a perna 3→4 (da máxima do 3 ao
+    extremo da queda), bem menor que no modelo de pivôs; o 3 não precisa passar o 1;
+    com "Exigir tomada", o 1 tem de começar depois da última tomada. Venda é o espelho.
+    O modelo de pivôs, descrito a seguir, continua disponível.
+    Compra (Pivôs): topo 1 → fundo 2 → topo 3 acima do 1 (pivôs nos fechamentos, como
     no gráfico de linha) → fecha abaixo do fundo 2 → fecha acima do topo 3.
     O POI é a caixa entre o extremo da perna de baixa e o topo 3, cobrindo
     os **pavios** (ou só o corpo, via input); a linha de entrada fica na borda do POI ou em
@@ -68,6 +76,21 @@ lab de backtest em Python:
     (condição "Qualquer chamada de função alert()", uma vez por fechamento
     de barra); a mensagem traz ativo, TF, COMPRA/VENDA, entrada, stop e alvo.
 
+## Hoffmeister POI Estratégia (backtest)
+
+[`hoffmeister_poi_strategy.pine`](hoffmeister_poi_strategy.pine) — a mesma liquidez e o
+mesmo gatilho do Hoffmeister POI, com ordens para medir a performance no
+Strategy Tester. Cada gatilho vira uma ordem **limite** na entrada calculada
+(borda ou 50% do POI), com o stop e o alvo do próprio gatilho. Risco de 0,25% do
+saldo por trade (input), uma posição por vez por gráfico (enquanto houver posição
+aberta ou ordem pendente, gatilhos novos são ignorados); a ordem expira em N barras
+(input) ou quando o POI quebra. Breakeven opcional: quando uma barra depois do
+preenchimento anda X × risco a favor (padrão 2, 0 desliga), o stop vai para a entrada
+(com lucro travado opcional) e o alvo original fica. Conta inicial USD 10.000, alavancagem 100:1 e
+slippage de 5 ticks por padrão: ajuste na aba Propriedades. Se mexer na lógica de
+liquidez ou gatilho, mantenha os dois arquivos em sincronia. O histórico do M1/M5 no
+TradingView é limitado pelo plano (poucas semanas), o que limita a amostra do backtest.
+
 ## Instalação no TradingView
 
 1. Abra o [Pine Editor](https://www.tradingview.com/pine-editor/) no
@@ -75,7 +98,9 @@ lab de backtest em Python:
 2. Crie um novo indicador em branco.
 3. Copie e cole o conteúdo de
    [`hoffmeister_ict.pine`](hoffmeister_ict.pine) ou de
-   [`hoffmeister_poi.pine`](hoffmeister_poi.pine) (um indicador por vez).
+   [`hoffmeister_poi.pine`](hoffmeister_poi.pine) (um indicador por vez). A estratégia
+   ([`hoffmeister_poi_strategy.pine`](hoffmeister_poi_strategy.pine)) entra como
+   **estratégia** em branco, não como indicador.
 4. Clique em **Add to chart**.
 5. Ative/desative cada camada e ajuste os parâmetros pelo painel de inputs,
    agrupados por seção (ICT: Estrutura, FVG, OB, Sessões, Range, Trade Zone,
