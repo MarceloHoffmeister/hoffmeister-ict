@@ -29,12 +29,12 @@ colLiqL  = input.color(color.new(color.lime, 25),    "Liquidez abaixo (fundos)",
 
 gTg = "② Gatilho (1-2-3 → quebra fundo → quebra topo)"
 inTrg     = input.bool(true, "Ativar gatilho (independe da liquidez/tomada)", group = gTg)
-trgMaxTF  = input.timeframe("5", "Gatilho só roda em gráficos até este TF", group = gTg)
+trgMaxTF  = input.timeframe("5", "Gatilho só roda em gráficos até este TF (padrão M5; nunca no TF da liquidez ou acima: lá o POI só aparece como contexto, tracejado)", group = gTg)
 trgLen    = input.int(2, "Swing lookback do gatilho (left = right)", minval = 1, group = gTg)
 trgWin    = input.int(72, "Janela máx. do topo/fundo 3 até o gatilho (barras)", minval = 5, group = gTg)
 trgModel  = input.string("Velas", "Modelo do gatilho (Velas = 1 alta · 2 baixa · 3 alta · 4 quebra o 2 · 5 fecha além do 3; Pivôs 1-2-3 = topo/fundo/topo por pivô)", options = ["Velas", "Pivôs 1-2-3"], group = gTg)
 trgWinC   = input.int(30, "Velas: janela máx. do fim do 3 até o 5 (barras)", minval = 3, group = gTg)
-trgNeedCtx = input.bool(true, "Exigir tomada de liquidez antes do 1-2-3 (o 1, 2 e 3 têm de vir depois da última tomada do lado certo)", group = gTg)
+trgNeedCtx = input.bool(true, "Exigir contexto antes do 1-2-3: tomada de liquidez OU POI do TF da liquidez retestado do lado certo (fechou dentro e depois fora da caixa; o 1, 2 e 3 têm de vir depois; no TF da liquidez não exige)", group = gTg)
 trgMinExc = input.float(0.0, "Folga mín. do 3 sobre o 1 (× ATR; 0 = qualquer)", step = 0.1, minval = 0.0, group = gTg)
 trgPoiMode = input.string("Pavio", "POI cobre os extremos da perna pelo", options = ["Pavio", "Corpo"], group = gTg)
 trgEntry  = input.string("Auto", "Entrada", options = ["Auto", "Borda do POI", "50% do POI"], group = gTg)
@@ -84,6 +84,26 @@ type TrgSig
     int   dir   // 1 = compra, -1 = venda
 
 var array<TrgSig> trgSigs = array.new<TrgSig>()
+
+// POI do TF da liquidez (M15) mostrado em gráficos menores: não é entrada, é contexto do gatilho
+type CtxPoi
+    box    bx
+    float  top
+    float  bot
+    int    dir      // 1 = compra, -1 = venda (inverte quando o preço ultrapassa a caixa)
+    int    bar      // barra do gráfico em que foi registrado
+    string txt
+    int    t        // time do registro (validade em barras do TF do POI)
+    int    ps = 0     // lado do fechamento anterior: 1 acima da caixa, -1 abaixo, 0 dentro
+    int    ent = 0    // lado por onde o preço entrou na caixa pela última vez
+    float  xl = na    // menor low / maior high desde que entrou (pontua o retesto)
+    float  xh = na
+    int    arm = na   // barra do fechamento fora, pelo mesmo lado da entrada: retesto confirmado = contexto
+    string atx = ""   // texto do contexto armado (alerta e tooltip)
+var array<CtxPoi> ctxPois = array.new<CtxPoi>()
+var array<int>    cxBarP  = array.new<int>(2, na)      // 0 = compra, 1 = venda: registro do POI vivo mais antigo do lado
+var array<string> cxPoiTxt = array.new<string>(2, "")
+var array<string> cInfo   = array.new<string>(2, "")   // o que liberou o 1-2-3 armado (tomada ou POI), p/ alerta e tooltip
 
 // sequência de velas da mesma cor (modelo "Velas"); doji (close == open) é ignorado
 type CRun
@@ -159,6 +179,8 @@ float sweepHiPx = na      // nível tomado nesta barra (preço, tipo e horário 
 float sweepLoPx = na
 string sweepHiTxt = ""
 string sweepLoTxt = ""
+bool sweepHiStr = false   // tomada FORTE: o nível tomado era o mais extremo entre os níveis vivos do lado (topo mais alto / fundo mais baixo)
+bool sweepLoStr = false
 int sweepT = sameTF ? time[1] : sT1
 bool swByWick  = liqMode != "Fechamento"
 bool swByClose = liqMode != "Pavio"
@@ -244,14 +266,21 @@ if inLiq and barstate.isconfirmed
                 bool swept = wickHit or closeHit
                 if swept
                     sweepT := wickHit ? time : (sameTF ? time[1] : sT1)
+                    bool strongSw = true
+                    for j = 0 to array.size(liqs) - 1
+                        LiqLevel o = array.get(liqs, j)
+                        if o.kind > 0 and o.side == z.side and (z.side == 1 ? o.price > z.price : o.price < z.price)
+                            strongSw := false
                     if z.side == 1
                         sweepHiNow := true
                         sweepHiPx  := z.price
                         sweepHiTxt := z.kind == 2 ? "EQH" : "$$"
+                        sweepHiStr := sweepHiStr or strongSw
                     else
                         sweepLoNow := true
                         sweepLoPx  := z.price
                         sweepLoTxt := z.kind == 2 ? "EQL" : "$$"
+                        sweepLoStr := sweepLoStr or strongSw
                     if not na(z.ln)
                         line.set_x2(z.ln, time)
                         line.set_style(z.ln, line.style_dotted)
@@ -322,6 +351,8 @@ var array<float> cxLvPx  = array.new<float>(2, na)   // nível que abriu o conte
 var array<string> cxLvTxt = array.new<string>(2, "")
 var array<int>   cxLvT   = array.new<int>(2, na)
 var array<float> cxPx  = array.new<float>(2, na)   // extremo da tomada (menor low p/ compra, maior high p/ venda)
+var array<bool>  cxStr = array.new<bool>(2, false)   // contexto de tomada FORTE: não expira e não cai com tomada interna do lado oposto
+var array<bool>  cxHl  = array.new<bool>(2, false)   // depois da tomada, o TF da liquidez formou fundo mais alto (compra) / topo mais baixo (venda) que o extremo tomado
 
 // modelo "Velas": 2 candidatos (0 = compra, 1 = venda). st: 0 nenhum · 1 espera quebra do 2 · 2 espera fechar além do 3
 var array<int>   cvSt   = array.new<int>(2, 0)
@@ -336,11 +367,154 @@ var CRun r0 = na   // sequência em andamento
 var CRun r1 = na   // a anterior
 var CRun r2 = na   // a anterior a essa
 
+// ---- POI do TF da liquidez como contexto ----
+// O 1-2-3 em velas do TF da liquidez (M15) forma uma caixa grande demais p/ entrada, mas vale como contexto
+// (junto da tomada de liquidez): em gráficos MENORES, o POI do lado certo libera o gatilho só depois de
+// RETESTADO (fecha dentro da caixa e depois fora, pelo mesmo lado de onde entrou; ver o bloco do POI abaixo).
+// Vive trgWin barras DO TF DO POI (M15 por padrão); é desenhado também no TF da liquidez (lá o 1-2-3 não exige contexto). Usa sempre o modelo Velas e roda dentro do request.security
+// (estado próprio); devolve o resultado da barra FECHADA anterior (sem repaint).
+f_cpoi() =>
+    var int   c0 = 0
+    var float h0 = na
+    var float l0 = na
+    var float hb0 = na
+    var float lb0 = na
+    var float k0 = na
+    var int   ht0 = na
+    var int   lt0 = na
+    var int   c1 = 0
+    var float h1 = na
+    var float l1 = na
+    var int   c2 = 0
+    var array<int>   sv  = array.new<int>(2, 0)
+    var array<int>   sb  = array.new<int>(2, 0)
+    var array<float> q2  = array.new<float>(2, na)
+    var array<float> q3  = array.new<float>(2, na)
+    var array<float> q3b = array.new<float>(2, na)
+    var array<int>   q3t = array.new<int>(2, na)
+    var array<float> xb  = array.new<float>(2, na)
+    var array<float> xw  = array.new<float>(2, na)
+    var bool  pFB = false
+    var float pTB = na
+    var float pBB = na
+    var int   pLB = na
+    var bool  pFS = false
+    var float pTS = na
+    var float pBS = na
+    var int   pLS = na
+    var int   pT  = na
+    bool  fB = false
+    float tB = na
+    float bB = na
+    int   lB = na
+    bool  fS = false
+    float tS = na
+    float bS = na
+    int   lS = na
+    if close != open
+        int cc = close > open ? 1 : -1
+        if c0 != 0 and c0 != cc
+            if c1 != 0 and c2 != 0
+                for i = 0 to 1
+                    int dc = i == 0 ? 1 : -1
+                    if c0 == dc and c1 == -dc and c2 == dc and (dc == 1 ? k0 > h1 : k0 < l1)
+                        array.set(sv, i, 1)
+                        array.set(sb, i, bar_index)
+                        array.set(q2, i, dc == 1 ? l1 : h1)
+                        array.set(q3, i, dc == 1 ? h0 : l0)
+                        array.set(q3b, i, dc == 1 ? hb0 : lb0)
+                        array.set(q3t, i, dc == 1 ? ht0 : lt0)
+                        array.set(xb, i, dc == 1 ? math.min(open, close) : math.max(open, close))
+                        array.set(xw, i, dc == 1 ? low : high)
+            c2 := c1
+            c1 := c0
+            h1 := h0
+            l1 := l0
+        if c0 == 0 or c0 != cc
+            c0 := cc
+            h0 := high
+            l0 := low
+            hb0 := math.max(open, close)
+            lb0 := math.min(open, close)
+            k0 := close
+            ht0 := time
+            lt0 := time
+        else
+            if high > h0
+                h0 := high
+                ht0 := time
+            if low < l0
+                l0 := low
+                lt0 := time
+            hb0 := math.max(hb0, math.max(open, close))
+            lb0 := math.min(lb0, math.min(open, close))
+            k0 := close
+    for i = 0 to 1
+        int dv = i == 0 ? 1 : -1
+        int s = array.get(sv, i)
+        if s > 0
+            if bar_index - array.get(sb, i) > trgWinC
+                s := 0
+            else
+                float w = array.get(xw, i)
+                float b = array.get(xb, i)
+                w := dv == 1 ? math.min(w, low) : math.max(w, high)
+                b := dv == 1 ? math.min(b, math.min(open, close)) : math.max(b, math.max(open, close))
+                array.set(xw, i, w)
+                array.set(xb, i, b)
+                float a3 = array.get(q3, i)
+                if s == 1
+                    if dv * (close - array.get(q2, i)) < 0
+                        s := 2
+                else if dv * (close - a3) > 0
+                    bool wk = trgPoiMode == "Pavio"
+                    float e3 = wk ? a3 : array.get(q3b, i)
+                    float ex = wk ? w : b
+                    if dv == 1
+                        fB := true
+                        tB := e3
+                        bB := ex
+                        lB := array.get(q3t, i)
+                    else
+                        fS := true
+                        tS := ex
+                        bS := e3
+                        lS := array.get(q3t, i)
+                    s := 0
+        array.set(sv, i, s)
+    bool  oFB = pFB
+    float oTB = pTB
+    float oBB = pBB
+    int   oLB = pLB
+    bool  oFS = pFS
+    float oTS = pTS
+    float oBS = pBS
+    int   oLS = pLS
+    int   oT  = pT
+    pFB := fB
+    pTB := tB
+    pBB := bB
+    pLB := lB
+    pFS := fS
+    pTS := tS
+    pBS := bS
+    pLS := lS
+    pT  := time
+    [oFB, oTB, oBB, oLB, oFS, oTS, oBS, oLS, oT]
+
+[cpFB, cpTB, cpBB, cpLB, cpFS, cpTS, cpBS, cpLS, cpT] = request.security(syminfo.tickerid, liqTFeff, f_cpoi(), lookahead = barmerge.lookahead_off)
+bool newCp   = nz(ta.change(cpT)) != 0               // 1ª barra do gráfico depois de fechar uma barra do TF da liquidez
+bool isCtxTf = timeframe.in_seconds() >= timeframe.in_seconds(liqTFeff)
+bool needCtx = trgNeedCtx and not isCtxTf
+bool ctxTfOk = timeframe.in_seconds() <= timeframe.in_seconds(liqTFeff)   // o POI do TF da liquidez é desenhado até nesse TF
+
 // texto da tomada que liberou o gatilho (alerta e tooltip)
 f_trgInfo(int i) =>
     float lvPx = array.get(cxLvPx, i)
+    bool hl = array.get(cxHl, i)
     na(lvPx) ? "" : "tomou " + array.get(cxLvTxt, i) + " " + str.tostring(lvPx, format.mintick) +
-      " (fechamento " + liqTFeff + " " + str.format_time(array.get(cxLvT, i), "dd/MM HH:mm", syminfo.timezone) + ")"
+      " (fechamento " + liqTFeff + " " + str.format_time(array.get(cxLvT, i), "dd/MM HH:mm", syminfo.timezone) + ")" +
+      (array.get(cxStr, i) ? " · forte" : "") + " · contexto " + (hl ? "2" : "1") + "/2" + (hl ? (i == 0 ? " (fundo mais alto)" : " (topo mais baixo)") : "")
 
 // desenha o POI do gatilho e devolve [entrada, stop, alvo]; usado pelos dois modelos
 f_trgDraw(int d, float poiTop, float poiBot, float extW, int leftBar, string info) =>
@@ -366,7 +540,75 @@ f_trgDraw(int d, float poiTop, float poiBot, float extW, int leftBar, string inf
             label.delete(gone.lm)
     [entryPx, stopPx, tpPx]
 
-bool trgTfOk = timeframe.in_seconds() <= timeframe.in_seconds(trgMaxTF)   // gatilho só do M5 pra baixo
+// registra o POI do TF da liquidez (caixa tracejada, estende até ser invalidada ou expirar)
+f_ctxAdd(int d, float hi, float lo, int t0) =>
+    color cT = d == 1 ? colTrgBuy : colTrgSell
+    int pm = timeframe.in_seconds(liqTFeff) / 60
+    string tx = "POI " + (pm < 60 ? "M" + str.tostring(pm) : "H" + str.tostring(pm / 60))
+    box bx = box.new(t0, hi, time, lo, xloc = xloc.bar_time, border_color = color.new(cT, 40), border_style = line.style_dashed,
+      bgcolor = color.new(cT, 92), text = tx, text_color = color.new(cT, 20), text_size = size.small, text_halign = text.align_right)
+    string info = tx + " " + str.tostring(lo, format.mintick) + "–" + str.tostring(hi, format.mintick) +
+      " (" + str.format_time(t0, "dd/MM HH:mm", syminfo.timezone) + ")"
+    int s0 = close > hi ? 1 : (close < lo ? -1 : 0)
+    array.push(ctxPois, CtxPoi.new(bx, hi, lo, d, bar_index, info, time, s0, s0 == 0 ? d : s0))
+    while array.size(ctxPois) > 20
+        CtxPoi gone = array.shift(ctxPois)
+        box.delete(gone.bx)
+    true
+
+bool trgTfOk = timeframe.in_seconds() <= timeframe.in_seconds(trgMaxTF) and not isCtxTf   // gatilho só do M5 pra baixo, nunca no TF da liquidez
+// POIs do TF da liquidez (também no próprio TF, p/ ver a caixa sem descer o gráfico): registra os novos e apaga/congela
+// os que expiraram (trgWin barras do TF do POI). O POI NÃO libera o gatilho só por estar vivo: o contexto nasce do
+// retesto. O preço FECHA dentro da caixa e depois FECHA fora pelo MESMO lado de onde entrou; a direção é a desse lado
+// (entrou por cima e saiu por cima = reação, só compra; entrou por baixo e saiu por baixo = só venda). Atravessar a
+// caixa (entra por um lado, sai pelo outro) é o "ultrapassar": o POI inverte de direção (e de cor), o contexto de antes
+// cai, e o retesto seguinte arma a direção em que ultrapassou. cxBarP guarda o fechamento fora que armou (do POI armado
+// mais antigo de cada lado): o 1-2-3 tem de começar a partir dele. Pontuação do contexto (só informa, não bloqueia):
+// 1 pelo retesto, +1 se o retesto não passou da ponta da caixa (compra: low não perdeu o fundo = fundo mais alto).
+if inTrg and ctxTfOk and barstate.isconfirmed
+    if newCp and cpFB
+        f_ctxAdd(1, cpTB, cpBB, cpLB)
+    if newCp and cpFS
+        f_ctxAdd(-1, cpTS, cpBS, cpLS)
+    array.set(cxBarP, 0, na)
+    array.set(cxBarP, 1, na)
+    if array.size(ctxPois) > 0
+        for k = array.size(ctxPois) - 1 to 0
+            CtxPoi p = array.get(ctxPois, k)
+            if time - p.t > trgWin * timeframe.in_seconds(liqTFeff) * 1000
+                if not trgKeepBroken
+                    box.delete(p.bx)
+                array.remove(ctxPois, k)
+            else
+                box.set_right(p.bx, time)
+                int cs = close > p.top ? 1 : (close < p.bot ? -1 : 0)
+                if bar_index > p.bar
+                    if cs == 0 and p.ps != 0
+                        p.ent := p.ps
+                        p.xl := low
+                        p.xh := high
+                    else if cs == 0 or p.ps == 0
+                        p.xl := math.min(p.xl, low)
+                        p.xh := math.max(p.xh, high)
+                    if cs != 0 and cs != p.dir
+                        p.dir := cs
+                        p.arm := na
+                        color cF = cs == 1 ? colTrgBuy : colTrgSell
+                        box.set_border_color(p.bx, color.new(cF, 40))
+                        box.set_bgcolor(p.bx, color.new(cF, 92))
+                        box.set_text_color(p.bx, color.new(cF, 20))
+                    else if cs != 0 and p.ps == 0 and cs == p.ent
+                        int sc = (cs == 1 ? p.xl >= p.bot : p.xh <= p.top) ? 2 : 1
+                        p.arm := bar_index
+                        p.atx := p.txt + " · retestou e fechou " + (cs == 1 ? "acima" : "abaixo") + " " + str.format_time(time, "dd/MM HH:mm", syminfo.timezone) +
+                          " · contexto " + str.tostring(sc) + "/2" + (sc == 2 ? (cs == 1 ? " (fundo mais alto)" : " (topo mais baixo)") : "")
+                    p.ps := cs
+                int ix = p.dir == 1 ? 0 : 1
+                int cur = array.get(cxBarP, ix)
+                if not na(p.arm) and (na(cur) or p.arm < cur)
+                    array.set(cxBarP, ix, p.arm)
+                    array.set(cxPoiTxt, ix, p.atx)
+
 if inTrg and trgTfOk and barstate.isconfirmed
     // POI quebrado some: venda → fechamento ACIMA do topo da caixa; compra → fechamento ABAIXO do fundo
     if array.size(trgSigs) > 0
@@ -392,10 +634,16 @@ if inTrg and trgTfOk and barstate.isconfirmed
     // 1-2-3 que já estava pendente (ele nasceu antes da tomada); o contexto expira em trgWin barras.
     // Tomada do lado OPOSTO cancela o contexto (e o 1-2-3 pendente): a última tomada manda — se o preço
     // topou e depois tomou fundos, a venda já foi entregue e uma compra nova depende da tomada dos fundos.
+    // Exceção: tomada FORTE (a do nível mais extremo entre os vivos do lado, ex.: a máxima da perna) não expira
+    // e só cai com tomada forte do lado oposto (as internas convivem: abrem o contexto delas, sem derrubar o forte).
+    // Pontuação: 1 pela tomada, +1 se depois dela o TF da liquidez formou fundo mais alto (compra) / topo mais
+    // baixo (venda) que o extremo tomado (só informa no alerta/tooltip; não bloqueia).
     for i = 0 to 1
         int dc = i == 0 ? 1 : -1
         bool startedC = i == 0 ? sweepLoNow : sweepHiNow
         bool oppC = i == 0 ? sweepHiNow : sweepLoNow
+        bool strC = i == 0 ? sweepLoStr : sweepHiStr
+        bool oppStr = i == 0 ? sweepHiStr : sweepLoStr
         int cb = array.get(cxBar, i)
         float cp = array.get(cxPx, i)
         if startedC
@@ -406,18 +654,26 @@ if inTrg and trgTfOk and barstate.isconfirmed
             array.set(cxLvPx, i, i == 0 ? sweepLoPx : sweepHiPx)
             array.set(cxLvTxt, i, i == 0 ? sweepLoTxt : sweepHiTxt)
             array.set(cxLvT, i, sweepT)
-        else if oppC and trgNeedCtx
+            array.set(cxStr, i, strC or array.get(cxStr, i))
+            array.set(cxHl, i, false)
+        else if oppC and needCtx and (oppStr or not array.get(cxStr, i))   // tomada interna do lado oposto não derruba o contexto forte
             cb := na
+            array.set(cxStr, i, false)
             array.set(cSt, i, 0)
             array.set(cvSt, i, 0)
         else if not na(cb)
-            if bar_index - cb > trgWin
+            if bar_index - cb > trgWin and not array.get(cxStr, i)
                 cb := na
             else if (dc == 1 ? low < cp : high > cp)
                 cb := bar_index
                 cp := dc == 1 ? low : high
                 array.set(cSt, i, 0)   // a tomada ainda avançou (novo extremo): também descarta o pendente
                 array.set(cvSt, i, 0)
+                array.set(cxHl, i, false)
+            else if newHtf and (dc == 1 ? not na(hPL) : not na(hPH))
+                // pivô novo do TF da liquidez depois da tomada, sem renovar o extremo: HL na compra / LH na venda = +1
+                if hPT > time[bar_index - cb] and (dc == 1 ? hPL > cp : hPH < cp)
+                    array.set(cxHl, i, true)
         array.set(cxBar, i, cb)
         array.set(cxPx, i, cp)
     int np = array.size(pvP)
@@ -432,11 +688,18 @@ if inTrg and trgTfOk and barstate.isconfirmed
         int bar1 = array.get(pvB, np - 3)
         int ctxB = array.get(cxBar, 0)
         int ctxS = array.get(cxBar, 1)
-        bool okBuy  = not trgNeedCtx or (not na(ctxB) and bar1 > ctxB)
-        bool okSell = not trgNeedCtx or (not na(ctxS) and bar1 > ctxS)
+        int poiB = array.get(cxBarP, 0)
+        int poiS = array.get(cxBarP, 1)
+        bool swB = not na(ctxB) and bar1 > ctxB
+        bool swS = not na(ctxS) and bar1 > ctxS
+        bool poB = not na(poiB) and bar1 > poiB
+        bool poS = not na(poiS) and bar1 > poiS
+        bool okBuy  = not needCtx or swB or poB
+        bool okSell = not needCtx or swS or poS
         float minExc = trgMinExc * nz(liqAtr)
         if okBuy and ty1 == 1 and ty2 == -1 and ty3 == 1 and px3 - px1 > minExc   // compra: topo, fundo, topo mais alto
             array.set(cSt, 0, 4)
+            array.set(cInfo, 0, swB ? f_trgInfo(0) : (poB ? array.get(cxPoiTxt, 0) : ""))
             array.set(cP2, 0, px2)
             array.set(cP3, 0, px3)
             array.set(cB3, 0, bar3)
@@ -444,6 +707,7 @@ if inTrg and trgTfOk and barstate.isconfirmed
             array.set(cExtW, 0, na)
         if okSell and ty1 == -1 and ty2 == 1 and ty3 == -1 and px1 - px3 > minExc  // venda: fundo, topo, fundo mais baixo
             array.set(cSt, 1, 4)
+            array.set(cInfo, 1, swS ? f_trgInfo(1) : (poS ? array.get(cxPoiTxt, 1) : ""))
             array.set(cP2, 1, px2)
             array.set(cP3, 1, px3)
             array.set(cB3, 1, bar3)
@@ -477,7 +741,7 @@ if inTrg and trgTfOk and barstate.isconfirmed
                     bool wickPoi = trgPoiMode == "Pavio"
                     float p3e = wickPoi ? (d == 1 ? high[bar_index - b3] : low[bar_index - b3]) : p3   // lado do 3: pavio do candle do 3
                     float exe = wickPoi ? extW : ext                                                    // lado da perna: extremo de pavio
-                    string info = f_trgInfo(i)
+                    string info = array.get(cInfo, i)
                     [fe, fs, ft] = f_trgDraw(d, d == 1 ? p3e : exe, d == 1 ? exe : p3e, extW, b3, info)
                     trgLInfo := info
                     trgLEntry := fe
@@ -518,10 +782,14 @@ if inTrg and trgTfOk and barstate.isconfirmed
                     for i = 0 to 1
                         int dc = i == 0 ? 1 : -1
                         int cb = array.get(cxBar, i)
-                        bool ctxOk = not trgNeedCtx or (not na(cb) and r2.bar0 >= cb)
+                        int cpb = array.get(cxBarP, i)
+                        bool swOk = not na(cb) and r2.bar0 >= cb
+                        bool poOk = not na(cpb) and r2.bar0 >= cpb
+                        bool ctxOk = not needCtx or swOk or poOk
                         bool shape = r0.col == dc and r1.col == -dc and r2.col == dc and (dc == 1 ? r0.cl > r1.hi : r0.cl < r1.lo)
                         if ctxOk and shape
                             array.set(cvSt, i, 1)
+                            array.set(cInfo, i, swOk ? f_trgInfo(i) : (poOk ? array.get(cxPoiTxt, i) : ""))
                             array.set(cvBar, i, bar_index)
                             array.set(cvP2, i, dc == 1 ? r1.lo : r1.hi)
                             array.set(cvP3, i, dc == 1 ? r0.hi : r0.lo)
@@ -554,7 +822,7 @@ if inTrg and trgTfOk and barstate.isconfirmed
                         bool wk = trgPoiMode == "Pavio"
                         float q3e = wk ? q3 : array.get(cvP3B, i)
                         float exv = wk ? xw : xb
-                        string info = f_trgInfo(i)
+                        string info = array.get(cInfo, i)
                         [fe, fs, ft] = f_trgDraw(dv, dv == 1 ? q3e : exv, dv == 1 ? exv : q3e, xw, array.get(cvB3, i), info)
                         trgLInfo := info
                         trgLEntry := fe
@@ -605,7 +873,7 @@ if strategy.position_size != 0 and stBeAt > 0 and not stBeDone and stRDist > 0 a
         stBeDone := true
 
 bool stInWin = not na(time(timeframe.period, stWin1, "UTC-4")) or not na(time(timeframe.period, stWin2, "UTC-4"))
-int stSigDir = not stInWin ? 0 : trgBuyNow and stLong ? 1 : (trgSellNow and stShort ? -1 : 0)
+int stSigDir = (not stInWin or isCtxTf) ? 0 : trgBuyNow and stLong ? 1 : (trgSellNow and stShort ? -1 : 0)
 if stSigDir != 0 and stPendDir == 0 and strategy.position_size == 0
     float stBal   = strategy.initial_capital + strategy.netprofit
     float stUnit  = strategy.convert_to_account(math.abs(trgLEntry - trgLStop)) * syminfo.pointvalue

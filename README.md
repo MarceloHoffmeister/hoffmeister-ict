@@ -55,7 +55,25 @@ lab de backtest em Python:
     dos níveis da camada de Liquidez, ou seja, do M15 por padrão (pelo critério escolhido: pavio
     ou fechamento do M15 além de um nível) e as pernas 1-2-3 só contam depois dela; o alerta e o
     tooltip do rótulo dizem qual nível foi tomado (tipo, preço e horário); roda
-    só em gráficos até M5 (input).
+    só em gráficos até M5 (input), nunca no TF da liquidez.
+    **Tomada forte** = a do nível mais extremo entre os vivos do lado (ex.: a máxima da perna):
+    ela não expira e só cai com tomada forte do lado oposto (as internas abrem o contexto delas
+    sem derrubá-la). A tomada pontua 1, +1 se depois dela o M15 formou fundo mais alto (compra) /
+    topo mais baixo (venda) que o extremo tomado (só informa: "contexto 2/2" no alerta/tooltip).
+    **Contexto** = qualquer um dos cenários: tomada de liquidez **ou** POI do TF da
+    liquidez (M15) vivo do lado certo. No M15 não há gatilho (sem caixa sólida, rótulo, alerta ou ordem); o POI M15 é
+    desenhado como caixa tracejada "POI M15" tanto no M15 quanto nos TFs menores. Nos menores
+    ele só libera o gatilho depois de **retestado**: o preço **fecha dentro da caixa** e
+    depois **fecha fora pelo mesmo lado de onde entrou**, e a direção é a desse lado (entrou
+    e saiu por cima = reação, só compra; por baixo = só venda). Atravessar a caixa (entra
+    por um lado e sai pelo outro) é "ultrapassar": o POI inverte de direção e de cor, o
+    contexto de antes cai e o retesto seguinte arma a direção em que ultrapassou. O 1 tem de
+    começar a partir do fechamento fora que armou. O contexto vale "janela" barras **do TF do
+    POI** (M15: 72 barras = 18 h) depois de registrado (o mesmo input da janela do gatilho,
+    mas contado em barras M15); "Manter o POI quebrado" congela a caixa expirada em vez de
+    apagar. O alerta/tooltip traz a pontuação "contexto 1/2" (retesto) ou "2/2" (o retesto
+    não passou da ponta da caixa: fundo mais alto na compra, topo mais baixo na venda; só informa). O POI de
+    contexto usa sempre o modelo Velas. O alerta/tooltip diz o que liberou o gatilho.
     Input "Modelo do gatilho": **Velas** (padrão) ou **Pivôs 1-2-3**. No modelo
     Velas, a compra é: 1 sequência de velas de alta → 2 sequência de velas de
     baixa (doji é ignorado) → 3 sequência de alta que fecha acima da máxima
